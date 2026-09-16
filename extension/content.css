@@ -1,0 +1,92 @@
+/* 페이지 위에 떠 있는 자동입력 패널 */
+#nrfill-panel {
+  --nr-bg: #ffffff;
+  --nr-fg: #1f2937;
+  --nr-muted: #6b7280;
+  --nr-line: #e5e7eb;
+  --nr-accent: #17785a;
+  --nr-accent-fg: #ffffff;
+  --nr-hover: #f0fdf4;
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 340px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--nr-bg);
+  color: var(--nr-fg);
+  border: 1px solid var(--nr-line);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  font: 13px/1.45 -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+  z-index: 2147483000;
+  overflow: hidden;
+}
+#nrfill-panel *, #nrfill-panel *::before, #nrfill-panel *::after { box-sizing: border-box; }
+#nrfill-panel.nrfill-collapsed { width: auto; }
+#nrfill-panel.nrfill-collapsed .nrfill-body { display: none; }
+
+#nrfill-panel .nrfill-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  background: var(--nr-accent); color: var(--nr-accent-fg);
+  cursor: move; user-select: none;
+}
+#nrfill-panel .nrfill-head strong { flex: 1; font-size: 13px; font-weight: 600; }
+#nrfill-panel .nrfill-head button {
+  background: rgba(255,255,255,0.18); color: #fff; border: 0; border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; font-size: 12px;
+}
+#nrfill-panel .nrfill-head button:hover { background: rgba(255,255,255,0.3); }
+
+#nrfill-panel .nrfill-body { padding: 12px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+#nrfill-panel label.nrfill-lbl { display: block; font-size: 12px; color: var(--nr-muted); margin-bottom: 4px; }
+#nrfill-panel input[type="text"], #nrfill-panel select {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--nr-line); border-radius: 8px;
+  font: inherit; color: var(--nr-fg); background: #fff; outline: none;
+}
+#nrfill-panel input[type="text"]:focus, #nrfill-panel select:focus { border-color: var(--nr-accent); box-shadow: 0 0 0 3px rgba(23,120,90,0.15); }
+
+#nrfill-panel .nrfill-results {
+  margin: 4px 0 0; padding: 0; list-style: none;
+  border: 1px solid var(--nr-line); border-radius: 8px; max-height: 190px; overflow: auto;
+}
+#nrfill-panel .nrfill-results:empty { display: none; }
+#nrfill-panel .nrfill-results li { padding: 7px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 8px; }
+#nrfill-panel .nrfill-results li + li { border-top: 1px solid var(--nr-line); }
+#nrfill-panel .nrfill-results li:hover, #nrfill-panel .nrfill-results li.nrfill-active { background: var(--nr-hover); }
+#nrfill-panel .nrfill-results li span.bno { color: var(--nr-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#nrfill-panel .nrfill-results li.nrfill-empty { color: var(--nr-muted); cursor: default; }
+
+#nrfill-panel .nrfill-selected {
+  display: flex; align-items: center; gap: 8px; margin-top: 6px;
+  padding: 8px 10px; background: var(--nr-hover); border-radius: 8px; font-size: 12px;
+}
+#nrfill-panel .nrfill-selected b { font-variant-numeric: tabular-nums; }
+#nrfill-panel .nrfill-selected .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#nrfill-panel .nrfill-selected:empty { display: none; }
+
+#nrfill-panel .nrfill-actions { display: flex; gap: 8px; }
+#nrfill-panel .nrfill-btn {
+  flex: 1; padding: 9px 10px; border: 0; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 600;
+  background: var(--nr-accent); color: var(--nr-accent-fg);
+}
+#nrfill-panel .nrfill-btn:hover { filter: brightness(1.08); }
+#nrfill-panel .nrfill-btn.secondary { background: #f3f4f6; color: var(--nr-fg); font-weight: 500; }
+#nrfill-panel .nrfill-btn:disabled { opacity: 0.5; cursor: default; }
+#nrfill-panel .nrfill-mini { background: none; border: 1px solid var(--nr-line); border-radius: 6px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: 11px; color: var(--nr-fg); }
+#nrfill-panel .nrfill-mini:hover { background: #f3f4f6; }
+
+#nrfill-panel .nrfill-status { font-size: 12px; color: var(--nr-muted); min-height: 16px; }
+#nrfill-panel .nrfill-status.ok { color: #15803d; }
+#nrfill-panel .nrfill-status.err { color: #b91c1c; }
+#nrfill-panel .nrfill-foot { display: flex; justify-content: space-between; font-size: 11px; color: var(--nr-muted); }
+#nrfill-panel .nrfill-foot a { color: var(--nr-accent); cursor: pointer; text-decoration: underline; }
+
+/* 값이 채워진 입력칸 강조 */
+.nrfill-flash { outline: 3px solid rgba(23,120,90,0.45) !important; transition: outline 0.3s; }
+
+/* 필드 직접 지정 모드 */
+body.nrfill-picking input { cursor: crosshair !important; }
+body.nrfill-picking input:hover { outline: 3px dashed #f59e0b !important; }

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로그인 자동입력 설정</title>
+<style>
+  :root { --accent: #17785a; --line: #e5e7eb; --muted: #6b7280; --bg: #f9fafb; --fg: #1f2937; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  section { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 4px; }
+  .help { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  input[type="text"], select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(23,120,90,.15); }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { color: #b91c1c; }
+  button:hover { filter: brightness(.97); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > * { flex: 1; }
+  .row > button { flex: 0 0 auto; }
+  .msg { font-size: 13px; margin-top: 8px; min-height: 18px; }
+  .msg.ok { color: #15803d; } .msg.err { color: #b91c1c; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  label.f { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .empty { color: var(--muted); text-align: center; padding: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>로그인 자동입력 설정</h1>
+  <p class="sub">nr.energy.or.kr 로그인 화면에서 쓸 사용자(휴대폰 번호)와 기관 데이터를 관리합니다.</p>
+
+  <section>
+    <h2>1. 사용자(휴대폰 번호) 등록</h2>
+    <p class="help">등록해 두면 로그인 화면 패널에서 사용자를 고르는 것만으로 휴대폰 번호가 채워집니다.</p>
+    <div class="row">
+      <input type="text" id="u-name" placeholder="이름 (예: 홍길동)">
+      <input type="text" id="u-phone" placeholder="휴대폰 번호 (예: 010-1234-5678)" inputmode="tel">
+      <button class="primary" id="u-add">추가</button>
+    </div>
+    <div class="msg" id="u-msg"></div>
+    <table id="u-table">
+      <thead><tr><th style="width:40px">#</th><th>이름</th><th>휴대폰</th><th style="width:150px"></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>2. 기관(사업자등록번호) 데이터</h2>
+    <p class="help">확장 프로그램에는 구글 시트 내용이 미리 담겨 있습니다. 시트를 수정했다면 아래 버튼으로 최신 내용을 다시 불러오세요. (시트는 "링크가 있는 모든 사용자 보기" 공유 상태여야 합니다.)</p>
+    <div class="grid">
+      <div>
+        <label class="f" for="sheet-id">구글 시트 ID 또는 주소</label>
+        <input type="text" id="sheet-id">
+      </div>
+      <div>
+        <label class="f" for="sheet-gid">시트 탭 gid (비우면 첫 번째 탭)</label>
+        <input type="text" id="sheet-gid" placeholder="예: 0">
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span id="org-info" style="color:var(--muted);font-size:13px"></span>
+      <button id="org-sync" class="primary">시트에서 최신 데이터 가져오기</button>
+      <button id="org-reset">내장 데이터로 되돌리기</button>
+    </div>
+    <div class="msg" id="org-msg"></div>
+    <div style="margin-top:10px">
+      <input type="text" id="org-q" placeholder="데이터 확인용 검색 (기관명)">
+      <table id="org-table"><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 입력칸 지정 (자동으로 못 찾을 때만)</h2>
+    <p class="help">보통은 비워 두면 됩니다. 로그인 화면 패널의 "사업자칸 지정 / 휴대폰칸 지정"을 눌러 입력칸을 클릭하면 여기에 자동으로 저장됩니다. 직접 CSS 셀렉터를 적어도 됩니다 (여러 칸이면 쉼표로 구분).</p>
+    <div class="grid">
+      <div>
+        <label class="f" for="biz-sel">사업자등록번호 입력칸 셀렉터</label>
+        <input type="text" id="biz-sel" placeholder="예: #bizNo  또는  #bizNo1, #bizNo2, #bizNo3">
+      </div>
+      <div>
+        <label class="f" for="phone-sel">휴대폰 번호 입력칸 셀렉터</label>
+        <input type="text" id="phone-sel" placeholder="예: #hpNo  또는  #hp1, #hp2, #hp3">
+      </div>
+      <div>
+        <label class="f" for="biz-fmt">사업자번호 입력 형식</label>
+        <select id="biz-fmt">
+          <option value="auto">자동 (입력칸 길이로 판단)</option>
+          <option value="hyphen">하이픈 포함 (000-00-00000)</option>
+          <option value="digits">숫자만 (0000000000)</option>
+        </select>
+      </div>
+      <div>
+        <label class="f" for="phone-fmt">휴대폰 입력 형식</label>
+        <select id="phone-fmt">
+          <option value="auto">자동 (입력칸 길이로 판단)</option>
+          <option value="hyphen">하이픈 포함 (010-0000-0000)</option>
+          <option value="digits">숫자만 (01000000000)</option>
+        </select>
+      </div>
+      <div>
+        <label class="f" for="only-login">패널 표시 위치</label>
+        <select id="only-login">
+          <option value="1">로그인 페이지(login.do)에서만 표시</option>
+          <option value="0">nr.energy.or.kr 모든 페이지에서 표시</option>
+        </select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <span></span>
+      <button class="primary" id="adv-save">저장</button>
+    </div>
+    <div class="msg" id="adv-msg"></div>
+  </section>
+</div>
+<script src="options.js"></script>
+</body>
+</html>
