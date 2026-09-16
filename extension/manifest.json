@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "신재생에너지센터 로그인 자동입력",
+  "description": "nr.energy.or.kr 로그인 화면에서 기관(사업자)을 검색하면 사업자등록번호를, 등록된 사용자를 선택하면 휴대폰 번호를 자동으로 채워 줍니다.",
+  "version": "1.0.0",
+  "default_locale": "ko",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://nr.energy.or.kr/*",
+    "https://docs.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "로그인 자동입력 설정 열기"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://nr.energy.or.kr/*"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "js": [
+        "fill.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "data/orgs.json"
+      ],
+      "matches": [
+        "https://nr.energy.or.kr/*"
+      ]
+    }
+  ]
+}
