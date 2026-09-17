@@ -61,7 +61,7 @@
 ## 4. 기관(사업자등록번호) 데이터 갱신
 
 확장 프로그램에는 [구글 시트](https://docs.google.com/spreadsheets/d/1aIUyHK8FrLSot9zL4Z-j9W0C6KQNDL5dz45tdC40elc/edit?usp=sharing)의
-기관명·사업자번호(중복 제거 후 625곳)가 `extension/data/orgs.json` 파일로 미리 담겨 있습니다.
+기관명·사업자번호(중복 제거 후 1,778곳)가 `extension/data/orgs.json` 파일로 미리 담겨 있습니다.
 
 시트를 수정한 뒤 최신 내용으로 바꾸려면:
 
