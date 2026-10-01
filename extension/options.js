@@ -171,4 +171,77 @@
     });
   }
   init();
+
+  // ---------- 4. 크롤링 → 구글 시트 ----------
+  const STATUS_KO = { written: '시트 작성', exists: '시트에 이미 있음', past: '준공 경과 제외', collected: '수집(시트 미연결)' };
+  const COLS = 'ABCDEFGHIJKLMNOPQR'.split('');
+  function randomToken() {
+    const a = new Uint8Array(12); crypto.getRandomValues(a);
+    return [...a].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  async function renderScript() {
+    const tpl = await (await fetch(chrome.runtime.getURL('apps-script/Code.gs'))).text();
+    const sheet = $('#gs-sheet').value.trim() || '설치계획';
+    $('#gs-code').value = tpl.replace('__TOKEN__', $('#gs-token').value).replace('__SHEET__', sheet.replace(/'/g, "\\'"));
+  }
+  $('#gs-sheet').addEventListener('input', renderScript);
+  $('#gs-copy').addEventListener('click', async () => {
+    await renderScript();
+    await navigator.clipboard.writeText($('#gs-code').value);
+    msg('#gs-msg', '코드를 복사했습니다. Apps Script 편집기에 붙여넣으세요.', 'ok');
+  });
+  $('#gs-save').addEventListener('click', async () => {
+    const url = $('#gs-url').value.trim();
+    const sheetName = $('#gs-sheet').value.trim() || '설치계획';
+    const delay = Math.max(0, Number($('#cr-delay').value) || 1);
+    if (url && !/^https:\/\/script\.google(usercontent)?\.com\//.test(url) && !/^http:\/\/127\.0\.0\.1/.test(url)) {
+      return msg('#gs-msg', '웹 앱 URL은 https://script.google.com/macros/s/…/exec 형태여야 합니다.', 'err');
+    }
+    await chrome.storage.sync.set({ sheetUrl: url, sheetName, crawlDelay: delay * 1000 });
+    renderScript();
+    if (!url) return msg('#gs-msg', '저장했습니다. (URL이 비어 있어 시트에는 쓰지 않고 수집만 합니다)', 'ok');
+    msg('#gs-msg', '연결 확인 중...');
+    const r = await chrome.runtime.sendMessage({ type: 'sheet-ping' });
+    if (r && r.ok) msg('#gs-msg', `연결 성공: "${r.sheet}" 탭, 마지막 기록 행 ${r.lastRow}행. 다음 기록은 ${r.lastRow + 1}행부터입니다.`, 'ok');
+    else msg('#gs-msg', '연결 실패: ' + ((r && r.error) || '응답 없음'), 'err');
+  });
+
+  async function renderLog() {
+    const { crawlLog = {}, crawlResults = [] } = await chrome.storage.local.get({ crawlLog: {}, crawlResults: [] });
+    const entries = Object.entries(crawlLog).sort((a, b) => String(b[1].at).localeCompare(String(a[1].at)));
+    const cnt = {}; entries.forEach(([, v]) => { cnt[v.status] = (cnt[v.status] || 0) + 1; });
+    $('#cr-info').textContent = `기록 ${entries.length}건 · ` + Object.entries(cnt).map(([k, v]) => `${STATUS_KO[k] || k} ${v}`).join(' · ') + ` · 수집 결과 ${crawlResults.length}행`;
+    const tb = $('#cr-table tbody'); tb.innerHTML = '';
+    if (!entries.length) { tb.innerHTML = '<tr><td colspan="4" class="empty">아직 기록이 없습니다.</td></tr>'; return; }
+    for (const [, v] of entries.slice(0, 50)) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td></td><td></td><td></td><td></td>';
+      [STATUS_KO[v.status] || v.status, v.org, v.name, v.end].forEach((t, i) => { tr.children[i].textContent = t || ''; });
+      tb.appendChild(tr);
+    }
+  }
+  $('#cr-copy').addEventListener('click', async () => {
+    const { crawlResults = [] } = await chrome.storage.local.get({ crawlResults: [] });
+    if (!crawlResults.length) return msg('#cr-msg', '복사할 수집 결과가 없습니다.', 'err');
+    const cell = (v) => { v = String(v || ''); return /[\t\n"]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    const tsv = crawlResults.map((r) => COLS.map((c) => cell(r[c])).join('\t')).join('\n');
+    await navigator.clipboard.writeText(tsv);
+    msg('#cr-msg', `${crawlResults.length}행을 복사했습니다. 시트의 A열 빈 칸을 선택하고 붙여넣으세요.`, 'ok');
+  });
+  $('#cr-reset').addEventListener('click', async () => {
+    if (!confirm('작업 기록과 수집 결과를 모두 지울까요? 다음 크롤링 때 모든 건을 다시 엽니다.')) return;
+    await chrome.storage.local.remove(['crawlLog', 'crawlResults', 'crawlState', 'crawlInbox']);
+    renderLog(); msg('#cr-msg', '초기화했습니다.', 'ok');
+  });
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && (ch.crawlLog || ch.crawlResults)) renderLog(); });
+
+  async function initCrawl() {
+    let s = await chrome.storage.sync.get({ sheetUrl: '', sheetName: '설치계획', sheetToken: '', crawlDelay: 1000 });
+    if (!s.sheetToken) { s.sheetToken = randomToken(); await chrome.storage.sync.set({ sheetToken: s.sheetToken }); }
+    $('#gs-url').value = s.sheetUrl; $('#gs-sheet').value = s.sheetName; $('#gs-token').value = s.sheetToken;
+    $('#cr-delay').value = String(Number(s.crawlDelay) / 1000);
+    if (!s.sheetUrl) $('#gs-guide').open = true;
+    renderScript(); renderLog();
+  }
+  initCrawl();
 })();
