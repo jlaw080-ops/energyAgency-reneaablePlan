@@ -78,7 +78,7 @@ function listHtml(page, v) {
     return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>목록</title></head><body>
     <div id="SBGridArea"><div id="sbBody">${sbRows(2, nc)}</div>${SB_HEAD}<div id="sbPage">${sbPager(2)}</div></div>
     <script>var D=${data}, M=${map};
-      function fn_view(iid){ window.open('/C0/C0_02/C0_02_01_010_cstpop.do?id='+M[iid],'cstpop','width=1200,height=900'); }
+      function fn_view(iid){ window.open('/C0/C0_02/C0_02_01_010_cstpop.do?sb=1&id='+M[iid],'cstpop','width=1200,height=900'); }
       document.getElementById('SBGridArea').addEventListener('click', function(e){
         var a = e.target.closest('a[data-page]');
         if (a) { var n=+a.dataset.page; setTimeout(function(){ document.getElementById('sbBody').innerHTML=D[n-1].body; document.getElementById('sbPage').innerHTML=D[n-1].pager; }, 300); return; }
@@ -103,7 +103,22 @@ function listHtml(page, v) {
   <tbody>${rowsHtml(page, v)}</tbody></table><div class="paging">${pagerHtml(page, v)}</div></body></html>`;
 }
 
-function popupHtml(id) {
+// SBGrid 흉내 에너지원 표: 본문 표가 먼저, 머리글 표가 뒤. 숨은 열 포함, 빈 채움 줄, 늦게 그려짐
+function sbEnergy(p) {
+  const td = (ci, v, hide) => `<td data-colindex="${ci}"${hide ? ' style="display:none"' : ''}><span>${v}</span></td>`;
+  const rows = p.energy.map((e, i) => `<tr data-rowindex="${i + 1}">${td(0, i + 1)}${td(1, 'X' + i, true)}${td(2, `<a href="#">${e[0]}</a>`)}${td(3, e[1])}${td(4, e[2])}${td(5, '864')}${td(6, '1.26')}${td(7, '365,848.36')}</tr>`);
+  while (rows.length < 4) rows.push(`<tr data-rowindex="${rows.length + 1}">${[0, 1, 2, 3, 4, 5, 6, 7].map((c) => td(c, '', c === 1)).join('')}</tr>`);
+  const head = `<tr data-rowindex="0">${td(0, '순번')}${td(1, '숨김', true)}${td(2, '에너지원')}${td(3, '에너지원형태')}${td(4, '설치의무용량')}${td(5, '단위에너지생산량')}${td(6, '보정계수')}${td(7, '신재생에너지 생산량(kwh/yr)')}</tr>`;
+  return `<div class="sbgrid_area"><div class="sb_body"><table>${rows.join('')}</table></div><div class="sb_head"><table>${head}</table></div></div>`;
+}
+// 그 아래 두 번째 그리드(건축용도) — 이 숫자가 에너지원으로 섞이면 안 됨
+function sbUse() {
+  const td = (ci, v) => `<td data-colindex="${ci}"><span>${v}</span></td>`;
+  return `<div class="sbgrid_area"><div class="sb_body"><table><tr data-rowindex="1">${td(0, 1)}${td(1, '문화시설')}${td(2, '2748.42')}${td(3, '999')}</tr></table></div>` +
+    `<div class="sb_head"><table><tr data-rowindex="0">${td(0, '순번')}${td(1, '건축용도')}${td(2, '건축 연면적')}${td(3, '단위에너지사용량')}</tr></table></div></div>`;
+}
+
+function popupHtml(id, sb) {
   const p = byId[id];
   const en = p.energy.map((e, i) => `<tr><td>${i + 1}</td><td><a href="#">${e[0]}</a></td><td>${e[1]}</td><td>${e[2]}</td><td>864</td><td>1.26</td><td>1</td><td><button>수정</button></td></tr>`).join('');
   // 실제 화면처럼 값은 페이지가 뜬 뒤 스크립트로 채운다
@@ -125,8 +140,8 @@ function popupHtml(id) {
    <tr><th>*허가연면적</th><td>*지 상 중 : <input value="2748.42">㎡</td></tr>
    <tr><th>*진행 일정</th><td>*허가 예정일 : <input value="20260131"><img alt="달력">
        *착공예정일 : <input id="st"><img alt="달력"> *준공예정일 : <input id="ed"><img alt="달력"></td></tr>
-   <tr><th>설치될 신·재생 에너지 설비의 개요</th><td>
-     <table border="1"><tr><th>순번</th><th>에너지원</th><th>에너지원형태</th><th>설치의무용량</th><th>단위에너지생산량</th><th>보정계수</th><th>신재생에너지 생산량(kwh/yr)</th><th>수정</th></tr>${en}</table>
+   <tr><th>설치될 신·재생 에너지 설비의 개요</th><td>${sb ? '<div id="enGrid"></div><div id="useGrid"></div>' : `
+     <table border="1"><tr><th>순번</th><th>에너지원</th><th>에너지원형태</th><th>설치의무용량</th><th>단위에너지생산량</th><th>보정계수</th><th>신재생에너지 생산량(kwh/yr)</th><th>수정</th></tr>${en}</table>`}
    </td></tr>
   </table>
   <script>
@@ -139,6 +154,7 @@ function popupHtml(id) {
      document.getElementById('st').value=${JSON.stringify(p.start)};
      document.getElementById('ed').value=${JSON.stringify(p.end)};
    }, 300);
+   ${sb ? `setTimeout(function(){ document.getElementById('enGrid').innerHTML=${JSON.stringify(sbEnergy(p))}; document.getElementById('useGrid').innerHTML=${JSON.stringify(sbUse())}; }, 1500);` : ''}
   </script></body></html>`;
 }
 
@@ -168,7 +184,7 @@ const server = http.createServer((req, res) => {
     popupsOpened++;
     return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>설치계획서</title></head><body style="margin:0"><iframe src="/C0/C0_02/cstpop_body.do?id=${u.searchParams.get('id')}" style="width:100%;height:900px;border:0"></iframe></body></html>`);
   }
-  if (u.pathname.endsWith('cstpop.do')) { popupsOpened++; return res.end(popupHtml(u.searchParams.get('id'))); }
+  if (u.pathname.endsWith('cstpop.do')) { popupsOpened++; return res.end(popupHtml(u.searchParams.get('id'), u.searchParams.get('sb'))); }
   if (u.pathname.endsWith('cstpop_body.do')) return res.end(popupHtml(u.searchParams.get('id')));
   if (u.pathname.endsWith('list.do')) return res.end(listHtml(Number(u.searchParams.get('page') || 1), u.searchParams.get('v') || 'A'));
   res.end('');
@@ -219,7 +235,18 @@ while (Date.now() - t0 < 150000) {
   if (v === 'C') {
     const lp = ctx.pages().find((p) => p.url().includes('list.do'));
     const target = lp && await lp.$('.nrcrawl-target');
-    if (target) { await target.click().catch(() => {}); manualClicks++; await new Promise((r) => setTimeout(r, 1500)); continue; }
+    if (target) {
+      await target.click().catch(() => {}); manualClicks++;
+      // 사람처럼: 팝업이 처리되어 표시가 다음 건물로 옮겨질 때까지 기다린 뒤 다시 누름
+      const before = await target.evaluate((e) => e.textContent).catch(() => '');
+      const w0 = Date.now();
+      while (Date.now() - w0 < 15000) {
+        await new Promise((r) => setTimeout(r, 500));
+        const now = await lp.$eval('.nrcrawl-target', (e) => e.textContent).catch(() => null);
+        if (now !== before) break;
+      }
+      continue;
+    }
   }
   await new Promise((r) => setTimeout(r, 500));
 }

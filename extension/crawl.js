@@ -15,7 +15,7 @@
   if (window.__nrCrawlLoaded) return;
   window.__nrCrawlLoaded = true;
 
-  const VERSION = '1.3.0';
+  const VERSION = '1.3.1';
   const isTop = window.top === window;
   const STATE = 'crawlState';     // { running, awaiting, assist, page, stats, startedAt }
   const LOG = 'crawlLog';         // { [key]: { status, org, name, at } }
@@ -100,32 +100,92 @@
     return (f ? fieldValue(f) : td.textContent).replace(/\s+/g, ' ').trim();
   }
 
+  // 머리글 줄(headerTr) 아래의 데이터 줄들을 읽는다.
+  //  - 일반 표: 같은 표의 아래 줄
+  //  - 그리드 부품(SBGrid 등): 머리글 표와 본문 표가 나뉘어 있어, 둘을 감싸는 영역에서 줄 번호/열 번호로 모은다
+  function rowsUnderHeader(headerTr) {
+    const table = headerTr.closest('table');
+    const hasCi = !!headerTr.querySelector('[data-colindex]');
+    const idx = {};
+    if (hasCi) {
+      for (const c of headerTr.cells) {
+        const ci = c.getAttribute('data-colindex'); const t = norm(c.textContent);
+        if (ci != null && t && !(t in idx)) idx[t] = Number(ci);
+      }
+    } else {
+      visualCells(headerTr).forEach((c, i) => { const t = norm(c.textContent); if (t && !(t in idx)) idx[t] = i; });
+    }
+    const visual = (r) => ({ cell: (i) => visualCells(r)[i] });
+    const same = [...table.rows].filter((r) => r !== headerTr && !r.querySelector('th') &&
+      (headerTr.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING));
+    if (same.length) return { idx, rows: same.map(visual) };
+    // 머리글 표를 감싸는 가장 가까운 영역 중 다른 줄이 들어 있는 곳 (= 이 그리드 하나)
+    let scope = table.parentElement;
+    for (let i = 0; i < 8 && scope && scope !== document.body; i++) {
+      if ([...scope.querySelectorAll('tr')].some((r) => !table.contains(r) && r.cells.length > 1)) break;
+      scope = scope.parentElement;
+    }
+    if (!scope) return { idx, rows: [] };
+    const trs = [...scope.querySelectorAll('tr')].filter((r) => !table.contains(r) && !r.closest(OWN));
+    if (hasCi && trs.some((r) => r.querySelector('td[data-colindex]'))) {
+      const byRow = new Map(); let n = 0;
+      for (const tr of trs) {
+        const tds = tr.querySelectorAll('td[data-colindex]');
+        if (!tds.length) continue;
+        const ri = tr.getAttribute('data-rowindex') ?? `n${n++}`;
+        if (!byRow.has(ri)) byRow.set(ri, {});
+        const rec = byRow.get(ri);
+        for (const td of tds) {
+          const ci = Number(td.getAttribute('data-colindex'));
+          if (!rec[ci] || (!rec[ci].textContent.trim() && td.textContent.trim())) rec[ci] = td;
+        }
+      }
+      return { idx, rows: [...byRow.values()].map((rec) => ({ cell: (i) => rec[i] })) };
+    }
+    return { idx, rows: trs.filter((r) => !r.querySelector('th')).map(visual) };
+  }
+
+  function energyHeader() {
+    for (const tr of document.querySelectorAll('tr')) {
+      if (tr.closest(OWN)) continue;
+      const tx = [...tr.cells].map((c) => norm(c.textContent));
+      if (tx.includes('에너지원') && tx.some((x) => x.startsWith('설치의무용량'))) return tr;
+    }
+    return null;
+  }
+
   // "설치될 신·재생 에너지 설비의 개요" 표: 에너지원 / 에너지원형태 / 설치의무용량
   function getEnergy() {
-    for (const t of document.querySelectorAll('table')) {
-      const rows = [...t.rows];
-      const hi = rows.findIndex((r) => {
-        const tx = [...r.cells].map((c) => norm(c.textContent));
-        return tx.includes('에너지원') && tx.some((x) => x.startsWith('설치의무용량'));
-      });
-      if (hi < 0) continue;
-      const head = [...rows[hi].cells].map((c) => norm(c.textContent));
-      const iSrc = head.indexOf('에너지원');
-      const iForm = head.findIndex((x) => x.startsWith('에너지원형태'));
-      const iCap = head.findIndex((x) => x.startsWith('설치의무용량'));
-      const out = [];
-      for (const r of rows.slice(hi + 1)) {
-        const c = [...r.cells];
-        if (c.length <= Math.max(iSrc, iCap)) continue;
-        const src = cellText(c[iSrc]);
-        const form = iForm >= 0 ? cellText(c[iForm]) : '';
-        const cap = cellText(c[iCap]);
-        if (!src || !cap) continue;
-        out.push(`${src}${form ? ' ' + form : ''}: ${cap} kW`);
-      }
-      return out;
+    const h = energyHeader();
+    if (!h) return [];
+    const { idx, rows } = rowsUnderHeader(h);
+    const key = (pre) => Object.keys(idx).find((k) => k.startsWith(pre));
+    const iSrc = idx['에너지원'];
+    const iForm = key('에너지원형태') != null ? idx[key('에너지원형태')] : -1;
+    const iCap = idx[key('설치의무용량')];
+    const out = [];
+    for (const r of rows) {
+      const c = (i) => { const td = i == null || i < 0 ? null : r.cell(i); return td ? cellText(td) : ''; };
+      const src = c(iSrc);
+      const cap = c(iCap);
+      if (!src || !/\d/.test(cap) || norm(src) === '에너지원') continue; // 빈 줄·"데이터 없음" 줄 제외
+      const form = c(iForm);
+      out.push(`${src}${form ? ' ' + form : ''}: ${cap} kW`);
     }
-    return [];
+    return out;
+  }
+
+  // 에너지원 표를 못 읽었을 때 구조를 남겨 둔다 (진단 정보 복사에 포함)
+  function energyDiag() {
+    const h = energyHeader();
+    if (!h) return { energy: '에너지원 머리글을 찾지 못함' };
+    const t = h.closest('table');
+    const near = [];
+    let p = t.parentElement;
+    for (let i = 0; i < 3 && p; i++) p = p.parentElement;
+    if (p) [...p.querySelectorAll('table')].slice(0, 8).forEach((x, i) =>
+      near.push(`${i}: rows=${x.rows.length} | ${clip(x.rows[0] ? x.rows[0].outerHTML : '', 500)}`));
+    return { energy: '표는 찾았으나 줄을 읽지 못함', header: clip(h.outerHTML, 1200), near };
   }
 
   function extract() {
@@ -174,6 +234,12 @@
         if (data.name && data.end) break;
       }
       await sleep(400);
+    }
+    // 에너지원 표는 다른 칸보다 늦게 그려질 수 있어 최대 6초 더 기다림
+    if (data && data.name && !data.energy.length) {
+      const t1 = Date.now();
+      while (Date.now() - t1 < 6000 && !data.energy.length) { await sleep(400); data.energy = getEnergy(); }
+      if (!data.energy.length) await set({ [POPUP_DIAG]: { url: location.href, ...energyDiag() } });
     }
     if (data && (data.name || data.end)) {
       data.url = location.href;
