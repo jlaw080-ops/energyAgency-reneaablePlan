@@ -6,23 +6,31 @@
 //   목록 페이지: 준공예정일이 오늘보다 이전이면 제외, 아니면 구글 시트에 한 행 추가
 //   작업 기록(crawlLog)에 남긴 건은 다음 실행 때 건너뜀
 //   한 페이지가 끝나면 다음 페이지 번호를 눌러 계속 진행
+//
+// 팝업이 자동으로 열리지 않는 환경(팝업 차단 등)에서는 "직접 클릭 모드"로 바뀐다:
+//   다음 대상 건물명을 노란색으로 표시하고, 사용자가 누르면 그 팝업을 읽어 기록한다.
 
 (function () {
   'use strict';
   if (window.__nrCrawlLoaded) return;
   window.__nrCrawlLoaded = true;
 
+  const VERSION = '1.2.0';
   const isTop = window.top === window;
-  const STATE = 'crawlState';     // { running, awaiting, page, stats, startedAt }
+  const STATE = 'crawlState';     // { running, awaiting, assist, page, stats, startedAt }
   const LOG = 'crawlLog';         // { [key]: { status, org, name, at } }
   const RESULTS = 'crawlResults'; // 수집한 시트 행 목록 (복사용 백업)
   const INBOX = 'crawlInbox';     // 팝업 → 목록 페이지 전달용
+  const POPUP_SEEN = 'crawlPopupSeen';  // 백그라운드가 새 팝업 창을 감지하면 기록
+  const POPUP_DIAG = 'crawlPopupDiag';  // 팝업에서 값을 못 읽었을 때 화면 정보
 
   const norm = (s) => String(s || '').replace(/[\s*:：]/g, '');
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const get = (k, d) => new Promise((r) => chrome.storage.local.get({ [k]: d }, (v) => r(v[k])));
   const set = (o) => new Promise((r) => chrome.storage.local.set(o, r));
   const send = (msg) => new Promise((r) => chrome.runtime.sendMessage(msg, (resp) => { void chrome.runtime.lastError; r(resp); }));
+  const clip = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…(생략)' : s; };
+  const OWN = '#nrfill-panel, #nrcrawl-panel';
 
   async function getState() { return (await get(STATE, null)) || { running: false }; }
   async function patchState(p) { const s = await getState(); const n = { ...s, ...p }; await set({ [STATE]: n }); return n; }
@@ -41,15 +49,16 @@
   function findLabels(label) {
     const want = norm(label);
     const out = [];
+    if (!document.body) return out;
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let n;
     while ((n = w.nextNode())) {
-      if (norm(n.nodeValue) === want && !n.parentElement.closest('#nrfill-panel, #nrcrawl-panel')) out.push(n);
+      if (norm(n.nodeValue) === want && !n.parentElement.closest(OWN)) out.push(n);
     }
     if (!out.length) {
       // 글자가 여러 조각으로 나뉜 경우: 요소 전체 글자로 다시 찾기
       for (const el of document.querySelectorAll('th, td, label, span, dt, div, strong, b')) {
-        if (el.children.length < 4 && norm(el.textContent) === want && !el.closest('#nrfill-panel, #nrcrawl-panel')) out.push(el);
+        if (el.children.length < 4 && norm(el.textContent) === want && !el.closest(OWN)) out.push(el);
       }
     }
     return out;
@@ -61,6 +70,9 @@
     if (cell && norm(cell.textContent) === norm(node.textContent) && cell.nextElementSibling) {
       const inNext = [...cell.nextElementSibling.querySelectorAll(FIELD_SEL)];
       if (inNext.length) return inNext;
+      // 입력칸 없이 글자로만 보여 주는 화면 대비
+      const t = cell.nextElementSibling.textContent.replace(/\s+/g, ' ').trim();
+      if (t) return [{ value: t, tagName: 'TEXT' }];
     }
     return [...document.querySelectorAll(FIELD_SEL)].filter(
       (e) => node.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING
@@ -128,12 +140,32 @@
     };
   }
 
+  function popupDiag() {
+    const labels = [...document.querySelectorAll('th, label, dt')].slice(0, 60)
+      .map((e) => e.textContent.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    return {
+      url: location.href,
+      title: document.title,
+      frame: isTop ? 'top' : 'iframe',
+      iframes: [...document.querySelectorAll('iframe, frame')].map((f) => f.src).slice(0, 5),
+      inputs: document.querySelectorAll(FIELD_SEL).length,
+      labels, // 항목 이름만 (담당자 연락처 같은 입력값은 담지 않음)
+    };
+  }
+
+  function topLooksPopup() {
+    try {
+      return !!window.top.opener || /pop\.do/i.test(window.top.location.pathname);
+    } catch (e) { return false; }
+  }
+
   async function popupMode() {
     const st = await getState();
     if (!st.running || !st.awaiting) return false;
-    const looksPopup = window.opener || /pop\.do/i.test(location.pathname);
-    if (!looksPopup) return false;
-    // 화면이 다 그려질 때까지 최대 15초 기다림
+    if (!topLooksPopup()) return false;
+    if (findHeader()) return false; // 목록 페이지 자신은 팝업이 아님
+    const key = st.awaiting;
+    // 화면이 다 그려질 때까지 최대 15초 기다림 (값이 늦게 채워지는 화면 대비)
     const t0 = Date.now();
     let data = null;
     while (Date.now() - t0 < 15000) {
@@ -143,55 +175,99 @@
       }
       await sleep(400);
     }
-    if (!data) return false;
-    data.url = location.href;
-    await set({ [INBOX]: { key: st.awaiting, data, at: Date.now() } });
-    await sleep(200);
-    send({ type: 'close-me' });
-    return true;
+    if (data && (data.name || data.end)) {
+      data.url = location.href;
+      await set({ [INBOX]: { key, data, at: Date.now() } });
+      await sleep(200);
+      send({ type: 'close-me' });
+      return true;
+    }
+    // 이 프레임에서는 못 찾음. 다른 프레임(iframe)이 읽었는지 잠시 확인 후, 최상위 창만 실패를 알린다.
+    if (!isTop) return true;
+    if (!/pop\.do/i.test(location.pathname) && !window.opener) return true;
+    await sleep(3000);
+    const box = await get(INBOX, null);
+    if (box && box.key === key) return true;
+    await set({
+      [POPUP_DIAG]: popupDiag(),
+      [INBOX]: { key, error: '팝업에서 설치계획서 항목(준공예정일 등)을 찾지 못했습니다', at: Date.now() },
+    });
+    return true; // 사용자가 화면을 볼 수 있게 팝업은 닫지 않음
   }
 
   // =====================================================================
   // 2) 목록 페이지: 표 읽기, 페이지 넘기기
   // =====================================================================
-  function findList() {
-    for (const t of document.querySelectorAll('table')) {
-      const rows = [...t.rows];
-      const hi = rows.findIndex((r) => {
-        const tx = [...r.cells].map((c) => norm(c.textContent));
-        return tx.includes('건물명') && tx.includes('신청번호');
-      });
-      if (hi < 0) continue;
-      const head = [...rows[hi].cells].map((c) => norm(c.textContent));
-      const idx = (h) => head.indexOf(h);
-      const I = { no: idx('신청번호'), org: idx('기관명'), name: idx('건물명'), kind: idx('신청서구분'), first: idx('최초신청일자') };
-      const items = [];
-      for (const r of rows.slice(hi + 1)) {
-        const c = [...r.cells];
-        if (c.length <= I.name) continue;
-        const txt = (i) => (i >= 0 && c[i] ? c[i].textContent.replace(/\s+/g, ' ').trim() : '');
-        const link = c[I.name].querySelector('a') || c[I.name];
-        const no = txt(I.no);
-        const name = txt(I.name);
-        if (!name) continue;
-        const key = /^\d{6,}$/.test(no) ? no : `${txt(I.org)}|${name}|${txt(I.kind)}|${txt(I.first)}`;
-        items.push({ key, no, org: txt(I.org), name, kind: txt(I.kind), link });
-      }
-      return { table: t, items };
+  // 칸 합치기(colspan)를 펼쳐서 "눈에 보이는 열 번호" 기준 칸 배열을 만든다
+  function visualCells(row) {
+    const out = [];
+    for (const c of row.cells) { const n = Math.max(1, c.colSpan || 1); for (let i = 0; i < n; i++) out.push(c); }
+    return out;
+  }
+
+  function findHeader() {
+    for (const tr of document.querySelectorAll('tr')) {
+      if (tr.closest(OWN)) continue;
+      const vc = visualCells(tr);
+      const tx = vc.map((c) => norm(c.textContent));
+      const name = tx.indexOf('건물명');
+      const no = tx.indexOf('신청번호');
+      if (name < 0 || no < 0) continue;
+      return {
+        tr, table: tr.closest('table'), cols: vc.length,
+        I: { no, name, org: tx.indexOf('기관명'), kind: tx.indexOf('신청서구분'), first: tx.indexOf('최초신청일자') },
+      };
     }
     return null;
   }
 
-  function signature() {
-    const l = findList();
-    return l ? l.items.map((x) => x.key).join(',') : '';
+  // 머리글과 같은 표 아래 줄들, 없으면 그 뒤에 오는 별도 표(머리글/본문이 나뉜 화면)의 줄들
+  function bodyRows(h) {
+    const need = h.I.name + 1;
+    const ok = (r) => {
+      if (r === h.tr || r.closest(OWN)) return false;
+      if (r.cells.length < 3 || visualCells(r).length < need) return false;
+      if (r.querySelector('th')) return false;
+      const vc = visualCells(r);
+      if (norm(vc[h.I.name].textContent) === '건물명') return false; // 숨은 머리글 줄
+      return r.offsetParent !== null || r.getClientRects().length > 0; // 보이는 줄만
+    };
+    const same = [...h.table.rows].filter((r) => (h.tr.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING) && ok(r));
+    if (same.length) return { rows: same, table: h.table };
+    for (const t of document.querySelectorAll('table')) {
+      if (t === h.table || t.contains(h.table) || h.table.contains(t) || t.closest(OWN)) continue;
+      if (!(h.table.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+      const rs = [...t.rows].filter(ok);
+      if (rs.length && Math.abs(visualCells(rs[0]).length - h.cols) <= 2) return { rows: rs, table: t };
+    }
+    return { rows: [], table: null };
+  }
+
+  function findList() {
+    const h = findHeader();
+    if (!h) return null;
+    const { rows, table: bodyTable } = bodyRows(h);
+    const I = h.I;
+    const items = [];
+    for (const r of rows) {
+      const vc = visualCells(r);
+      const txt = (i) => (i >= 0 && vc[i] ? vc[i].textContent.replace(/\s+/g, ' ').trim() : '');
+      const cell = vc[I.name];
+      const link = cell.querySelector('a, [onclick], button') || cell;
+      const no = txt(I.no);
+      const name = (link.getAttribute && link.getAttribute('title')) || txt(I.name);
+      if (!txt(I.name)) continue;
+      const key = /^\d{6,}$/.test(no) ? no : `${txt(I.org)}|${txt(I.name)}|${txt(I.kind)}|${txt(I.first)}`;
+      items.push({ key, no, org: txt(I.org), name: name.trim(), kind: txt(I.kind), link, row: r });
+    }
+    return { header: h, tables: [h.table, bodyTable].filter(Boolean), items };
   }
 
   // 페이지 번호 묶음(1 2 3 …)을 찾는다
-  function findPager(table) {
-    const nums = [...document.querySelectorAll('a, span, strong, em, button, li')].filter((e) => {
-      if (table.contains(e)) return false;
-      if (e.closest('#nrfill-panel, #nrcrawl-panel')) return false;
+  function findPager(tables) {
+    const inTables = (e) => tables.some((t) => t.contains(e));
+    const nums = [...document.querySelectorAll('a, span, strong, em, b, button, li')].filter((e) => {
+      if (inTables(e) || e.closest(OWN)) return false;
       return /^\d{1,3}$/.test(e.textContent.trim()) && e.children.length === 0;
     });
     const groups = new Map();
@@ -203,22 +279,39 @@
     let best = null;
     for (const [box, list] of groups) if (!best || list.length > best.list.length) best = { box, list };
     if (!best) return null;
-    const isCur = (e) => e.tagName !== 'A' && e.tagName !== 'BUTTON'
-      || /(^|\s)(on|active|current|sel|selected)(\s|$)/i.test(e.className + ' ' + (e.parentElement?.className || ''))
-      || e.getAttribute('aria-current');
+    const curRe = /(^|\s)(on|active|current|sel|selected|now|this)(\s|$)/i;
+    const isCur = (e) => (e.tagName !== 'A' && e.tagName !== 'BUTTON' && !e.closest('a, button'))
+      || curRe.test(e.className + ' ' + (e.parentElement?.className || ''))
+      || e.getAttribute('aria-current') || e.getAttribute('title') === '현재페이지';
     const curEl = best.list.find(isCur);
     const cur = curEl ? Number(curEl.textContent.trim()) : 1;
     const clickable = (e) => e.closest('a, button') || e;
-    const nextNum = best.list.find((e) => Number(e.textContent.trim()) === cur + 1);
-    let next = nextNum ? clickable(nextNum) : null;
+    const byNum = (n) => { const e = best.list.find((x) => Number(x.textContent.trim()) === n); return e ? clickable(e) : null; };
+    let next = byNum(cur + 1);
     if (!next) {
       next = [...best.box.querySelectorAll('a, button')].find((a) => {
-        const t = (a.textContent + ' ' + (a.title || '') + ' ' + (a.getAttribute('aria-label') || '') + ' ' +
+        const t = (a.textContent + ' ' + (a.title || '') + ' ' + (a.getAttribute('aria-label') || '') + ' ' + a.className + ' ' +
           [...a.querySelectorAll('img')].map((i) => i.alt).join(' ')).toLowerCase();
-        return /다음|next|›|»|>/.test(t) && !/마지막|last|끝/.test(t);
+        return /다음|next|›|»|>/.test(t) && !/마지막|last|끝|end/.test(t);
       }) || null;
     }
-    return { cur, next };
+    return { cur, next, first: cur > 1 ? byNum(1) : null, box: best.box };
+  }
+
+  function signature() {
+    const l = findList();
+    if (!l) return '';
+    const p = findPager(l.tables);
+    return l.items.map((x) => x.key).join(',') + '#' + (p ? p.cur : '');
+  }
+
+  async function waitChange(sig, ms) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      await sleep(500);
+      if (signature() !== sig) { await sleep(800); return true; }
+    }
+    return false;
   }
 
   // =====================================================================
@@ -248,6 +341,14 @@
     };
   }
 
+  // 목록의 건물명(말줄임 … 가능)과 팝업 건물명이 같은 건물인지
+  function sameBuilding(listName, popupName) {
+    const a = norm(listName).replace(/(\.\.\.|…)+$/, '');
+    const b = norm(popupName);
+    if (!a || !b) return true;
+    return b.startsWith(a) || a.startsWith(b);
+  }
+
   async function waitInbox(key, ms) {
     const t0 = Date.now();
     while (Date.now() - t0 < ms) {
@@ -268,15 +369,70 @@
     if (!r || !r.ok) { el.removeAttribute('data-nrcrawl-click'); el.click(); }
   }
 
+  function highlight(it, on) {
+    for (const el of document.querySelectorAll('.nrcrawl-target, .nrcrawl-row')) el.classList.remove('nrcrawl-target', 'nrcrawl-row');
+    if (on && it) {
+      it.row.classList.add('nrcrawl-row');
+      it.link.classList.add('nrcrawl-target');
+      it.row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }
+
+  // 한 건 처리: 팝업 열기 → 값 받기. 성공하면 { data }, 실패하면 { error }
+  async function openOne(it) {
+    await set({ [INBOX]: null });
+    let st = await patchState({ awaiting: it.key });
+    let box = null;
+
+    if (!st.assist) {
+      const clickAt = Date.now();
+      ui(`여는 중: ${it.name}`);
+      await pageClick(it.link);
+      box = await waitInbox(it.key, 8000);
+      if (!box) {
+        const seen = await get(POPUP_SEEN, null);
+        if (seen && seen.at >= clickAt - 500) {
+          ui(`팝업이 열려 내용을 기다리는 중: ${it.name}`);
+          box = await waitInbox(it.key, 20000);
+        } else {
+          st = await patchState({ assist: true });
+        }
+      }
+    }
+    if (!box && st.assist && st.running) {
+      highlight(it, true);
+      ui(`팝업이 자동으로 열리지 않아 직접 클릭 모드로 바꿨습니다. 노란색으로 표시된 "${it.name}"을(를) 직접 눌러 주세요.`);
+      while (!box) {
+        box = await waitInbox(it.key, 600000);
+        if (!box) break;
+        if (box.data && !sameBuilding(it.name, box.data.name)) {
+          ui(`다른 건물(${box.data.name})이 열렸습니다. 노란색으로 표시된 "${it.name}"을(를) 눌러 주세요.`);
+          await set({ [INBOX]: null });
+          box = null;
+        }
+      }
+      highlight(it, false);
+    }
+    await patchState({ awaiting: null });
+    if (!box) return { error: `팝업 응답 없음: ${it.name}` };
+    if (box.error) return { error: box.error };
+    if (!sameBuilding(it.name, box.data.name)) return { error: `다른 건물이 열렸습니다: ${box.data.name}` };
+    return { data: box.data };
+  }
+
   let running = false;
   async function runCrawl() {
     if (running) return;
     running = true;
+    let failStreak = 0;
     try {
       while (true) {
         const list = findList();
-        if (!list) { await finish('신청서 목록 표를 찾지 못했습니다.'); return; }
+        if (!list) { await finish('신청서 목록 표를 찾지 못했습니다. "진단 정보 복사"를 눌러 보내 주세요.'); return; }
         const settings = await new Promise((r) => chrome.storage.sync.get({ sheetUrl: '', crawlDelay: 1000 }, r));
+        const pg = findPager(list.tables);
+        ui(`${pg ? pg.cur : 1}페이지: 목록 ${list.items.length}건`);
+        if (!list.items.length) await sleep(1000);
 
         for (const it of list.items) {
           let st = await getState();
@@ -284,23 +440,22 @@
           const log = await get(LOG, {});
           if (log[it.key]) continue; // 이미 처리한 건
 
-          ui(`열기: ${it.name}`);
-          await set({ [INBOX]: null });
-          await patchState({ awaiting: it.key });
-          await pageClick(it.link);
-          const box = await waitInbox(it.key, 30000);
-          st = await patchState({ awaiting: null });
+          const res = await openOne(it);
+          st = await getState();
           if (!st.running) { ui(); return; }
           const stats = st.stats || {};
 
-          if (!box) {
+          if (res.error) {
             stats.error = (stats.error || 0) + 1;
-            await patchState({ stats, lastError: `팝업 응답 없음: ${it.name}` });
-            ui(`팝업이 열리지 않았습니다: ${it.name} (팝업 차단 해제 필요)`);
+            failStreak++;
+            await patchState({ stats, lastError: res.error });
+            if (failStreak >= 2) { await finish(`${res.error} — 연속 실패로 멈췄습니다. "진단 정보 복사"를 눌러 보내 주세요.`); return; }
+            ui(res.error);
             await sleep(500);
             continue;
           }
-          const d = box.data;
+          failStreak = 0;
+          const d = res.data;
           const end = ymd(d.end);
           const entry = { org: d.org || it.org, name: d.name || it.name, end: fmtDate(d.end), at: new Date().toISOString() };
 
@@ -320,10 +475,10 @@
                 stats[r.status] = (stats[r.status] || 0) + 1;
               } else {
                 stats.error = (stats.error || 0) + 1;
-                await patchState({ stats, lastError: `시트 저장 실패: ${(resp && resp.error) || '응답 없음'}` });
-                ui(`시트 저장 실패: ${(resp && resp.error) || '응답 없음'}`);
-                await sleep(500);
-                continue; // 기록하지 않음 → 다음 실행 때 다시 시도
+                const msg = `시트 저장 실패: ${(resp && resp.error) || '응답 없음'}`;
+                await patchState({ stats, lastError: msg });
+                await finish(`${msg} — 설정 4번에서 연결 테스트를 해 보세요.`);
+                return;
               }
             } else {
               log[it.key] = { ...entry, status: 'collected' };
@@ -337,19 +492,13 @@
         }
 
         // 다음 페이지
-        const pager = findPager(list.table);
+        const pager = findPager(list.tables);
         if (!pager || !pager.next) { await finish('모든 페이지를 처리했습니다.'); return; }
         const sig = signature();
         await patchState({ page: pager.cur + 1 });
         ui(`${pager.cur + 1}페이지로 이동`);
         await pageClick(pager.next);
-        const t0 = Date.now();
-        let changed = false;
-        while (Date.now() - t0 < 20000) {
-          await sleep(500);
-          if (signature() !== sig) { changed = true; break; }
-        }
-        if (!changed) { await finish('다음 페이지로 넘어가지 않아 종료했습니다.'); return; }
+        if (!(await waitChange(sig, 20000))) { await finish('다음 페이지로 넘어가지 않아 종료했습니다. "진단 정보 복사"를 눌러 보내 주세요.'); return; }
       }
     } finally {
       running = false;
@@ -357,13 +506,41 @@
   }
 
   async function finish(msg) {
+    highlight(null, false);
     await patchState({ running: false, awaiting: null, endedAt: new Date().toISOString(), lastMessage: msg });
     try { sessionStorage.removeItem('nrcrawl'); } catch (e) { /* ignore */ }
     ui(msg);
   }
 
   // =====================================================================
-  // 4) 목록 페이지 위 작은 패널
+  // 4) 진단 정보 (실제 사이트 구조가 예상과 다를 때 보내 받기 위한 요약)
+  // =====================================================================
+  async function diagnostics() {
+    const out = [];
+    const line = (k, v) => out.push(`## ${k}\n${typeof v === 'string' ? v : JSON.stringify(v, null, 1)}`);
+    line('버전/주소', `${VERSION} | ${location.href} | ${isTop ? 'top' : 'iframe'} | ${new Date().toISOString()}`);
+    const h = findHeader();
+    line('머리글', h ? { cols: h.cols, I: h.I, headerHtml: clip(h.tr.outerHTML, 1200) } : '찾지 못함');
+    if (h) {
+      const b = bodyRows(h);
+      line('본문 줄 수', `${b.rows.length} (별도 표: ${b.table && b.table !== h.table ? '예' : '아니오'})`);
+      b.rows.slice(0, 2).forEach((r, i) => line(`본문 ${i + 1}번째 줄 HTML`, clip(r.outerHTML, 1500)));
+      const l = findList();
+      line('읽은 항목(앞 3건)', l.items.slice(0, 3).map((x) => ({ key: x.key, name: x.name, link: clip(x.link.outerHTML, 300) })));
+      const p = findPager(l.tables);
+      line('페이지 번호', p ? { cur: p.cur, next: p.next ? clip(p.next.outerHTML, 300) : null, box: clip(p.box.outerHTML, 1200) } : '찾지 못함');
+    }
+    line('표 목록', [...document.querySelectorAll('table')].slice(0, 15).map((t, i) =>
+      `${i}: rows=${t.rows.length} | ${clip((t.rows[0]?.textContent || '').replace(/\s+/g, ' ').trim(), 120)}`).join('\n'));
+    line('iframe', [...document.querySelectorAll('iframe, frame')].map((f) => f.src).join('\n') || '없음');
+    line('상태', await getState());
+    line('팝업 감지', await get(POPUP_SEEN, null));
+    line('팝업 진단', await get(POPUP_DIAG, null));
+    return out.join('\n\n');
+  }
+
+  // =====================================================================
+  // 5) 목록 페이지 위 작은 패널
   // =====================================================================
   let panel = null;
   function buildPanel() {
@@ -378,24 +555,53 @@
         </div>
         <div class="nrcrawl-stats" id="nrcrawl-stats"></div>
         <div class="nrcrawl-msg" id="nrcrawl-msg"></div>
-        <div class="nrcrawl-foot" id="nrcrawl-foot"></div>
+        <div class="nrcrawl-foot"><span id="nrcrawl-foot"></span><a data-act="diag">진단 정보 복사</a></div>
       </div>`;
     document.documentElement.appendChild(panel);
+    placePanel();
+    setTimeout(placePanel, 2000);
     panel.addEventListener('click', async (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'settings') send({ type: 'open-options' });
       if (act === 'start') start();
-      if (act === 'stop') { await patchState({ running: false, awaiting: null, lastMessage: '사용자가 중지했습니다.' }); try { sessionStorage.removeItem('nrcrawl'); } catch (er) { /* */ } ui('중지했습니다.'); }
+      if (act === 'stop') {
+        highlight(null, false);
+        await patchState({ running: false, awaiting: null, lastMessage: '사용자가 중지했습니다.' });
+        try { sessionStorage.removeItem('nrcrawl'); } catch (er) { /* */ }
+        ui('중지했습니다.');
+      }
+      if (act === 'diag') {
+        e.preventDefault();
+        const text = await diagnostics();
+        try { await navigator.clipboard.writeText(text); ui('진단 정보를 복사했습니다. 채팅에 붙여넣어 보내 주세요.'); }
+        catch (er) { console.log(text); ui('복사에 실패했습니다. F12 → Console 탭의 내용을 보내 주세요.'); }
+      }
     });
     ui();
+  }
+
+  // 로그인 자동입력 패널이 오른쪽 아래에 있으면 그 왼쪽에 둔다
+  function placePanel() {
+    if (!panel) return;
+    const other = document.getElementById('nrfill-panel');
+    panel.style.right = other ? `${16 + other.getBoundingClientRect().width + 12}px` : '16px';
   }
 
   async function start() {
     const { sheetUrl } = await new Promise((r) => chrome.storage.sync.get({ sheetUrl: '' }, r));
     if (!sheetUrl && !confirm('구글 시트 연결(설정 4번)이 아직 없습니다.\n시트에 쓰지 않고 수집만 할까요? (설정 페이지에서 결과를 복사할 수 있습니다)')) return;
     try { sessionStorage.setItem('nrcrawl', '1'); } catch (e) { /* ignore */ }
-    await set({ [STATE]: { running: true, awaiting: null, page: 1, stats: {}, startedAt: new Date().toISOString() } });
+    await set({ [STATE]: { running: true, awaiting: null, assist: false, page: 1, stats: {}, startedAt: new Date().toISOString() }, [POPUP_DIAG]: null });
     ui('시작합니다.');
+    // 2페이지 이후에서 시작했다면 1페이지로 먼저 이동
+    const l = findList();
+    const p = l && findPager(l.tables);
+    if (p && p.first) {
+      ui('1페이지로 이동합니다.');
+      const sig = signature();
+      await pageClick(p.first);
+      await waitChange(sig, 15000); // 새로고침되는 사이트면 새 화면에서 이어서 진행
+    }
     runCrawl();
   }
 
@@ -408,10 +614,11 @@
     panel.querySelector('[data-act="stop"]').disabled = !st.running;
     panel.querySelector('#nrcrawl-stats').innerHTML =
       `<span>시트 작성 <b>${s.written || 0}</b></span><span>수집 <b>${s.collected || 0}</b></span>` +
-      `<span>준공 경과 제외 <b>${s.past || 0}</b></span><span>시트에 이미 있음 <b>${s.exists || 0}</b></span><span>오류 <b>${s.error || 0}</b></span>`;
+      `<span>준공 경과 제외 <b>${s.past || 0}</b></span><span>시트에 이미 있음 <b>${s.exists || 0}</b></span><span>오류 <b>${s.error || 0}</b></span>` +
+      (st.running && st.assist ? '<span class="assist">직접 클릭 모드</span>' : '');
     const m = panel.querySelector('#nrcrawl-msg');
     m.textContent = msg || st.lastMessage || (st.running ? '진행 중…' : '대기 중');
-    panel.querySelector('#nrcrawl-foot').textContent = `작업 기록 ${Object.keys(log).length}건 (기록된 건은 다시 열지 않습니다)`;
+    panel.querySelector('#nrcrawl-foot').textContent = `작업 기록 ${Object.keys(log).length}건`;
   }
 
   // =====================================================================
@@ -422,14 +629,14 @@
     if (await popupMode()) return;
     if (!isTop) return;
     // 목록 페이지가 늦게 그려질 수 있어 잠시 기다림
-    let list = null;
-    for (let i = 0; i < 20 && !(list = findList()); i++) await sleep(300);
-    if (!list) return;
+    let h = null;
+    for (let i = 0; i < 20 && !(h = findHeader()); i++) await sleep(300);
+    if (!h) return;
     buildPanel();
     const st = await getState();
     let mine = false;
     try { mine = sessionStorage.getItem('nrcrawl') === '1'; } catch (e) { /* ignore */ }
-    if (st.running && mine) { ui('이어서 진행합니다.'); runCrawl(); }
+    if (st.running && mine) { ui('이어서 진행합니다.'); await sleep(800); runCrawl(); }
     else if (st.running && !mine) { ui('다른 탭에서 진행 중입니다.'); }
   })();
 
@@ -438,5 +645,5 @@
   });
 
   // 테스트·디버그용
-  window.__nrCrawl = { extract, findList, findPager };
+  window.__nrCrawl = { extract, findList, findPager, diagnostics };
 })();
