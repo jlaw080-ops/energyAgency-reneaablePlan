@@ -281,6 +281,7 @@ const statuses = Object.values(log).map((v) => v.status).sort().join(',');
 check('log: 5건 기록 (written 2, exists 1, past 2)', statuses === 'exists,past,past,written,written', statuses);
 check('log: 준공 경과 건 상태 past', log['2512260024'] && log['2512260024'].status === 'past');
 const openedFirst = popupsOpened;
+for (let i = 0; i < 10 && ctx.pages().some((p) => p.url().includes('cstpop')); i++) await new Promise((r) => setTimeout(r, 500));
 check('popup: 5건 모두 열고 닫힘', openedFirst === 5 && ctx.pages().filter((p) => p.url().includes('cstpop')).length === 0, `opened=${openedFirst}`);
 await listPage.screenshot({ path: path.join(outDir, `crawl-list-${v}.png`) });
 
