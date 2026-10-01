@@ -1,0 +1,201 @@
+// 설치계획 크롤링 E2E 테스트
+// - 가짜 목록 페이지(2페이지, 페이지 이동 시 새로고침), 가짜 설치계획서 팝업, 가짜 구글 시트(Apps Script) 서버를 띄우고
+//   실제 Chromium 에 확장 프로그램을 올려 크롤링 전 과정을 검증한다.
+// 실행: node test/run-crawl.mjs
+import { createRequire } from 'node:module';
+const { chromium } = createRequire(import.meta.url)('/opt/node22/lib/node_modules/playwright');
+import fs from 'node:fs';
+import path from 'node:path';
+import http from 'node:http';
+
+const root = path.resolve(new URL('..', import.meta.url).pathname);
+const outDir = path.join(root, 'test/output'); fs.mkdirSync(outDir, { recursive: true });
+const extDir = path.join(outDir, 'ext-crawl'); fs.rmSync(extDir, { recursive: true, force: true });
+fs.cpSync(path.join(root, 'extension'), extDir, { recursive: true });
+const mf = JSON.parse(fs.readFileSync(path.join(extDir, 'manifest.json'), 'utf8'));
+mf.content_scripts[0].matches = ['http://127.0.0.1/*'];
+mf.host_permissions.push('http://127.0.0.1/*');
+mf.web_accessible_resources[0].matches = ['http://127.0.0.1/*'];
+fs.writeFileSync(path.join(extDir, 'manifest.json'), JSON.stringify(mf, null, 2));
+
+// ---------- 가짜 데이터 ----------
+const P = [
+  { no: '2603040001', org: '서울특별시', dept: '미래공간담당관', name: '노들섬 하늘예술정원 조성사업', zip: '04427', addr: '서울특별시 용산구 양녕로 445 446 일대 (이촌동)', start: '20260701', end: '20280331',
+    energy: [['지열', '수직밀폐형', '336.060'], ['태양광', 'BIPV', '17.544']] },
+  { no: '2608280007', org: '서울특별시', dept: '공공개발과', name: '홍릉 연구개발(R&D) 지원센터 신축공사', zip: '02455', addr: '서울특별시 동대문구 회기로 1', start: '20250301', end: '20271231',
+    energy: [['태양광', '건물부착형', '45.200']] },
+  { no: '2512260024', org: '서울특별시', dept: '건강정책과', name: '홍릉 첨단의료기기개발센터', zip: '02456', addr: '서울특별시 동대문구 회기로 2', start: '20220101', end: '20231231', // 준공 경과 → 제외
+    energy: [['태양광', 'BIPV', '10.000']] },
+  { no: '-', org: '서울특별시', dept: '동물보호과', name: '서울 반려동물 테마파크 조성', zip: '01234', addr: '서울특별시 마포구 1', start: '20270101', end: '20290630', kind: '설치계획', first: '',
+    energy: [['연료전지', 'PEMFC', '30.000']] },
+  { no: '2310180004', org: '서울특별시', dept: '농수산과', name: '양곡도매시장', zip: '06789', addr: '서울특별시 양천구 1', start: '20230101', end: '20200101', // 경과
+    energy: [] },
+];
+const pages = [P.slice(0, 3), P.slice(3)];
+const byId = Object.fromEntries(P.map((p, i) => [p.no === '-' ? 'draft' + i : p.no, p]));
+const idOf = (p) => Object.keys(byId).find((k) => byId[k] === p);
+
+function listHtml(page) {
+  const rows = pages[page - 1].map((p) => `<tr><td>${p.no}</td><td>${p.org}</td>
+    <td><a href="javascript:fn_view('${idOf(p)}')">${p.name}</a></td><td>${p.kind || '설치계획'}</td><td>2026-03-04</td><td>보완요청</td></tr>`).join('');
+  const pager = [1, 2].map((n) => n === page ? `<strong class="on">${n}</strong>` : `<a href="?page=${n}">${n}</a>`).join(' ');
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>목록</title>
+  <script>function fn_view(id){ window.open('/C0/C0_02/C0_02_01_010_cstpop.do?id='+id,'cstpop','width=1200,height=900'); }</script></head>
+  <body><table border="1"><thead><tr><th>신청번호</th><th>기관명</th><th>건물명</th><th>신청서구분</th><th>최초신청일자</th><th>진행상태</th></tr></thead>
+  <tbody>${rows}</tbody></table><div class="paging">${pager}</div></body></html>`;
+}
+
+function popupHtml(id) {
+  const p = byId[id];
+  const en = p.energy.map((e, i) => `<tr><td>${i + 1}</td><td><a href="#">${e[0]}</a></td><td>${e[1]}</td><td>${e[2]}</td><td>864</td><td>1.26</td><td>1</td><td><button>수정</button></td></tr>`).join('');
+  // 실제 화면처럼 값은 페이지가 뜬 뒤 스크립트로 채운다
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>설치계획서</title></head><body>
+  <h3>기관개요</h3>
+  <table border="1">
+   <tr><th>신청번호</th><td>${p.no}</td><th>신청구분</th><td><select><option>설치계획</option></select></td><th><span>*</span>대표자명</th><td><input id="rep" value=""></td></tr>
+   <tr><th><span style="color:red">*</span>기관명</th><td><input id="orgNm"></td><th>사업자 등록번호</th><td><input value="104-83-00469"></td></tr>
+   <tr><th rowspan="2">*의무기관</th><th>*담당자 이름</th><td><input value="이상봉"></td><th>*담당자 전화</th><td><input value="02-2133-7642"></td></tr>
+   <tr><th>*담당자 부서</th><td><input id="dept"></td><th>*담당자 이동전화</th><td><input value="010-6404-1250"></td></tr>
+   <tr><th rowspan="2">대행업체</th><th>*담당자 이름</th><td><input value="이승훈"></td></tr>
+   <tr><th>*담당자 부서</th><td><input value="설계부"></td></tr>
+  </table>
+  <h3>건축물 개요</h3>
+  <table border="1">
+   <tr><th>*건물명</th><td><input id="bldNm" size="60"></td><th>*건축물 용도</th><td><select><option>문화 및 집회시설</option></select></td></tr>
+   <tr><th>*건물 주소</th><td><button type="button">우편번호</button><input id="zip"><input id="addr" size="50"></td>
+       <th>*건물 형태</th><td><input type="radio" name="t">신축 <input type="radio" name="t" checked>증축</td></tr>
+   <tr><th>*허가연면적</th><td>*지 상 중 : <input value="2748.42">㎡</td></tr>
+   <tr><th>*진행 일정</th><td>*허가 예정일 : <input value="20260131"><img alt="달력">
+       *착공예정일 : <input id="st"><img alt="달력"> *준공예정일 : <input id="ed"><img alt="달력"></td></tr>
+   <tr><th>설치될 신·재생 에너지 설비의 개요</th><td>
+     <table border="1"><tr><th>순번</th><th>에너지원</th><th>에너지원형태</th><th>설치의무용량</th><th>단위에너지생산량</th><th>보정계수</th><th>신재생에너지 생산량(kwh/yr)</th><th>수정</th></tr>${en}</table>
+   </td></tr>
+  </table>
+  <script>
+   setTimeout(function(){
+     document.getElementById('orgNm').value=${JSON.stringify(p.org)};
+     document.getElementById('dept').value=${JSON.stringify(p.dept)};
+     document.getElementById('bldNm').value=${JSON.stringify(p.name)};
+     document.getElementById('zip').value=${JSON.stringify(p.zip)};
+     document.getElementById('addr').value=${JSON.stringify(p.addr)};
+     document.getElementById('st').value=${JSON.stringify(p.start)};
+     document.getElementById('ed').value=${JSON.stringify(p.end)};
+   }, 300);
+  </script></body></html>`;
+}
+
+// ---------- 가짜 구글 시트 (Apps Script 동작 흉내) ----------
+const sheet = [{ A: '수요기관', B: '공고명' }, { A: '서울특별시', B: '홍릉 연구개발(R&D) 지원센터 신축공사' }]; // 2행에 이미 있는 건 하나
+const tokens = new Set();
+let popupsOpened = 0;
+const server = http.createServer((req, res) => {
+  const u = new URL(req.url, 'http://x');
+  if (u.pathname === '/sheet' && req.method === 'POST') {
+    let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
+      const body = JSON.parse(b); tokens.add(body.token);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (body.action === 'ping') return res.end(JSON.stringify({ ok: true, sheet: body.sheet, lastRow: sheet.length }));
+      const k = (r) => String(r.A).replace(/\s/g, '') + '|' + String(r.B).replace(/\s/g, '');
+      const results = body.rows.map((r) => {
+        if (sheet.some((s) => k(s) === k(r))) return { key: r._key, status: 'exists' };
+        sheet.push(r); return { key: r._key, status: 'written', row: sheet.length };
+      });
+      res.end(JSON.stringify({ ok: true, results }));
+    });
+    return;
+  }
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  if (u.pathname.endsWith('cstpop.do')) { popupsOpened++; return res.end(popupHtml(u.searchParams.get('id'))); }
+  if (u.pathname.endsWith('list.do')) return res.end(listHtml(Number(u.searchParams.get('page') || 1)));
+  res.end('');
+});
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const base = `http://127.0.0.1:${server.address().port}`;
+
+fs.rmSync(path.join(outDir, 'profile-crawl'), { recursive: true, force: true });
+const ctx = await chromium.launchPersistentContext(path.join(outDir, 'profile-crawl'), {
+  headless: true, channel: 'chromium',
+  args: [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`],
+});
+const sw = ctx.serviceWorkers()[0] || (await ctx.waitForEvent('serviceworker'));
+const extId = sw.url().split('/')[2];
+let failed = 0;
+const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name} ${extra}`); if (!ok) failed++; };
+const storage = (k) => sw.evaluate((k) => new Promise((r) => chrome.storage.local.get(k, (v) => r(v[k]))), k);
+
+// 1) 설정: 시트 연결
+const opt = await ctx.newPage();
+await opt.goto(`chrome-extension://${extId}/options.html`);
+await opt.waitForFunction(() => document.querySelector('#gs-token').value.length > 10);
+const token = await opt.inputValue('#gs-token');
+const code = await opt.inputValue('#gs-code');
+check('settings: Apps Script 코드에 토큰·시트명 반영', code.includes(`const TOKEN = '${token}'`) && code.includes("const DEFAULT_SHEET = '설치계획'"));
+await opt.fill('#gs-url', `${base}/sheet`);
+await opt.fill('#cr-delay', '0.1');
+await opt.click('#gs-save');
+await opt.waitForFunction(() => /연결/.test(document.querySelector('#gs-msg').textContent) && !/확인 중/.test(document.querySelector('#gs-msg').textContent));
+const pingMsg = await opt.textContent('#gs-msg');
+check('settings: 연결 테스트 성공', pingMsg.includes('연결 성공') && pingMsg.includes('3행부터'), pingMsg);
+check('settings: 토큰이 시트로 전달됨', tokens.has(token));
+
+// 2) 목록 페이지에서 크롤링 시작
+const page = await ctx.newPage();
+page.on('dialog', (d) => d.accept());
+await page.goto(`${base}/C0/list.do?page=1`);
+await page.waitForSelector('#nrcrawl-panel');
+check('list: 크롤링 패널 표시', true);
+await page.click('#nrcrawl-panel [data-act="start"]');
+const t0 = Date.now();
+while (Date.now() - t0 < 90000) {
+  const st = await storage('crawlState');
+  if (st && !st.running && st.endedAt) break;
+  await new Promise((r) => setTimeout(r, 500));
+}
+const st = await storage('crawlState');
+check('crawl: 정상 종료', st && !st.running && /모든 페이지/.test(st.lastMessage || ''), st && st.lastMessage);
+const listPage = ctx.pages().find((p) => p.url().includes('list.do'));
+check('crawl: 2페이지까지 이동', listPage && listPage.url().includes('page=2'), listPage && listPage.url());
+
+const written = sheet.slice(2);
+check('sheet: 새로 기록된 행 수 = 2 (준공 경과 2건 제외, 이미 있는 1건 제외)', written.length === 2, JSON.stringify(written.map((r) => r.B)));
+const r1 = written.find((r) => r._key === '2603040001') || {};
+check('sheet: A 기관명', r1.A === '서울특별시', r1.A);
+check('sheet: B 건물명', r1.B === '노들섬 하늘예술정원 조성사업', r1.B);
+check('sheet: C 건물주소 (우편번호 제외)', r1.C === '서울특별시 용산구 양녕로 445 446 일대 (이촌동)', r1.C);
+check('sheet: H 착공예정일', r1.H === '2026-07-01', r1.H);
+check('sheet: I 준공예정일', r1.I === '2028-03-31', r1.I);
+check('sheet: J 담당부서 (의무기관)', r1.J === '미래공간담당관', r1.J);
+check('sheet: R 에너지원 개요', r1.R === '지열 수직밀폐형: 336.060 kW\n태양광 BIPV: 17.544 kW', JSON.stringify(r1.R));
+const draft = written.find((r) => r.B === '서울 반려동물 테마파크 조성');
+check('sheet: 신청번호 없는(작성중) 건도 기록', !!draft && draft.R === '연료전지 PEMFC: 30.000 kW', draft && draft.R);
+
+const log = await storage('crawlLog');
+const statuses = Object.values(log).map((v) => v.status).sort().join(',');
+check('log: 5건 기록 (written 2, exists 1, past 2)', statuses === 'exists,past,past,written,written', statuses);
+check('log: 준공 경과 건 상태 past', log['2512260024'] && log['2512260024'].status === 'past');
+const openedFirst = popupsOpened;
+check('popup: 5건 모두 열고 닫힘', openedFirst === 5 && ctx.pages().filter((p) => p.url().includes('cstpop')).length === 0, `opened=${openedFirst}`);
+await listPage.screenshot({ path: path.join(outDir, 'crawl-list.png') });
+
+// 3) 다시 실행 → 기록된 건은 열지 않음
+await listPage.goto(`${base}/C0/list.do?page=1`);
+await listPage.waitForSelector('#nrcrawl-panel');
+await listPage.click('#nrcrawl-panel [data-act="start"]');
+const t1 = Date.now();
+while (Date.now() - t1 < 60000) {
+  const s2 = await storage('crawlState');
+  if (s2 && !s2.running && s2.endedAt && s2.startedAt > st.startedAt) break;
+  await new Promise((r) => setTimeout(r, 500));
+}
+check('rerun: 팝업을 새로 열지 않음', popupsOpened === openedFirst, `opened=${popupsOpened}`);
+check('rerun: 시트에 중복 기록 없음', sheet.length === 4, String(sheet.length));
+
+// 4) 설정 페이지 작업 기록 표시
+await opt.reload();
+await opt.waitForFunction(() => /기록 5건/.test(document.querySelector('#cr-info').textContent));
+check('settings: 작업 기록 표시', true, await opt.textContent('#cr-info'));
+await opt.screenshot({ path: path.join(outDir, 'crawl-options.png'), fullPage: true });
+
+await ctx.close(); server.close();
+console.log(failed ? `\n${failed} FAILED` : '\nALL PASSED');
+process.exit(failed ? 1 : 0);
