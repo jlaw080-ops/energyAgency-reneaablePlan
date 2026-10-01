@@ -237,7 +237,11 @@
 
   // 일반 표: 머리글과 같은 표의 아래 줄, 없으면 다른 표(앞뒤 어디든)의 줄
   function bodyRows(h) {
-    if (h.grid) return gridRows(h);
+    if (h.grid) {
+      const g = gridRows(h);
+      if (g.rows.length) return g;
+      // 본문 칸에 열 번호가 없으면 일반 표 방식으로 (본문 칸은 합치기가 없어 열 번호 = 칸 순서)
+    }
     const need = h.I.name + 1;
     const ok = (r) => {
       if (r === h.tr || r.closest(OWN)) return false;
