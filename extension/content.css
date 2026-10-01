@@ -93,7 +93,7 @@ body.nrfill-picking input:hover { outline: 3px dashed #f59e0b !important; }
 
 /* ---------- 설치계획 크롤링 패널 (신청서 목록 페이지) ---------- */
 #nrcrawl-panel {
-  position: fixed; left: 16px; bottom: 16px; width: 300px; z-index: 2147483000;
+  position: fixed; right: 16px; bottom: 16px; width: 300px; z-index: 2147483000;
   background: #fff; color: #1f2937; border: 1px solid #e5e7eb; border-radius: 12px;
   box-shadow: 0 10px 30px rgba(0,0,0,.18); overflow: hidden;
   font: 13px/1.45 -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
@@ -111,3 +111,10 @@ body.nrfill-picking input:hover { outline: 3px dashed #f59e0b !important; }
 #nrcrawl-panel .nrcrawl-stats b { color: #111827; font-variant-numeric: tabular-nums; }
 #nrcrawl-panel .nrcrawl-msg { font-size: 12px; color: #1d4ed8; min-height: 16px; word-break: keep-all; }
 #nrcrawl-panel .nrcrawl-foot { font-size: 11px; color: #6b7280; }
+#nrcrawl-panel .nrcrawl-foot { display: flex; justify-content: space-between; gap: 8px; }
+#nrcrawl-panel .nrcrawl-foot a { color: #1d4ed8; text-decoration: underline; cursor: pointer; white-space: nowrap; }
+#nrcrawl-panel .nrcrawl-stats .assist { grid-column: 1 / -1; color: #b45309; font-weight: 600; }
+/* 직접 클릭 모드: 다음에 누를 건물명 표시 */
+.nrcrawl-row > td { background: #fef9c3 !important; }
+.nrcrawl-target { outline: 3px solid #f59e0b !important; outline-offset: 2px; background: #fde047 !important; animation: nrcrawl-blink 1s ease-in-out infinite; }
+@keyframes nrcrawl-blink { 50% { outline-color: #fbbf24; } }

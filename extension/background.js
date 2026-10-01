@@ -29,6 +29,12 @@ async function sheetRequest(payload) {
   }
 }
 
+// 크롤링 중 새 팝업 창이 열렸는지 기록 (열리지 않았는지/열렸는데 못 읽었는지 구분용)
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab.openerTabId == null) return;
+  chrome.storage.local.set({ crawlPopupSeen: { opener: tab.openerTabId, tabId: tab.id, at: Date.now() } });
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
 
@@ -59,6 +65,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const el = document.querySelector(`[data-nrcrawl-click="${tok}"]`);
         if (!el) return false;
         el.removeAttribute('data-nrcrawl-click');
+        // 마우스 누름/뗌 이벤트로 동작하는 화면도 있어 함께 보낸다
+        const o = { bubbles: true, cancelable: true, view: window };
+        el.dispatchEvent(new MouseEvent('mousedown', o));
+        el.dispatchEvent(new MouseEvent('mouseup', o));
         el.click();
         return true;
       },

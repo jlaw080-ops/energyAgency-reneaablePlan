@@ -35,17 +35,90 @@ const pages = [P.slice(0, 3), P.slice(3)];
 const byId = Object.fromEntries(P.map((p, i) => [p.no === '-' ? 'draft' + i : p.no, p]));
 const idOf = (p) => Object.keys(byId).find((k) => byId[k] === p);
 
-function listHtml(page) {
-  const rows = pages[page - 1].map((p) => `<tr><td>${p.no}</td><td>${p.org}</td>
-    <td><a href="javascript:fn_view('${idOf(p)}')">${p.name}</a></td><td>${p.kind || '설치계획'}</td><td>2026-03-04</td><td>보완요청</td></tr>`).join('');
-  const pager = [1, 2].map((n) => n === page ? `<strong class="on">${n}</strong>` : `<a href="?page=${n}">${n}</a>`).join(' ');
+// 목록 화면 변형
+//  A: 머리글+본문 한 표, 페이지 이동 시 새로고침, javascript: 링크
+//  B: 머리글 표와 본문 표가 따로(본문 표에 숨은 머리글 줄), 새로고침 없는 페이지 이동, onclick 링크,
+//     건물명 말줄임(…), 2페이지에서 시작, 팝업 내용이 iframe 안에 있음
+//  C: A와 같지만 사람이 직접 누른 클릭에만 팝업이 열림 → 직접 클릭 모드 검증
+function rowsHtml(page, v) {
+  return pages[page - 1].map((p) => {
+    const nm = v === 'B' && p.name.length > 12 ? p.name.slice(0, 10) + '…' : p.name;
+    const link = v === 'B' ? `<a href="#" onclick="fn_view('${idOf(p)}');return false;">${nm}</a>`
+      : v === 'C' ? `<a href="#" onclick="if(event.isTrusted) fn_view('${idOf(p)}');return false;">${nm}</a>`
+      : `<a href="javascript:fn_view('${idOf(p)}')">${nm}</a>`;
+    return `<tr><td>${p.no}</td><td>${p.org}</td><td>${link}</td><td>${p.kind || '설치계획'}</td><td>2026-03-04</td><td>보완요청</td></tr>`;
+  }).join('');
+}
+function pagerHtml(page, v) {
+  return [1, 2].map((n) => v === 'B'
+    ? `<a href="#" class="${n === page ? 'on' : ''}" onclick="go(${n});return false;">${n}</a>`
+    : (n === page ? `<strong class="on">${n}</strong>` : `<a href="?v=${v}&page=${n}">${n}</a>`)).join(' ');
+}
+// D: 실제 사이트(SBGrid) 구조 흉내 — 본문 표가 먼저, 머리글 표가 뒤에. 신청번호 칸이 2개(두 번째는 숨은 내부 번호),
+//    모든 칸에 data-colindex(E는 본문 칸에 열 번호 없음), 빈 채움 줄, 링크 없이 그리드 영역 클릭 감지, ul>li>a.active 페이지 번호, 2페이지에서 시작
+const iidOf = (p) => '20191119' + String(P.indexOf(p) + 10).padStart(4, '0');
+function sbRows(page, noCol) {
+  const td = (ci, v, hide) => `<td class="sbgrid_cell"${noCol ? '' : ` data-colindex="${ci}"`}${hide ? ' style="display:none"' : ''}><span class="sbgrid_common">${v}</span></td>`;
+  const rows = pages[page - 1].map((p, ri) => `<tr data-rowindex="${ri + 1}" class="sbgrid_common">${td(0, p.no)}${td(1, iidOf(p), true)}${td(2, p.org)}${td(3, p.name)}${td(4, p.kind || '설치계획')}${td(5, '2019-11-19')}${td(6, '작성중')}</tr>`);
+  while (rows.length < 6) rows.push(`<tr data-rowindex="${rows.length + 1}">${[0, 1, 2, 3, 4, 5, 6].map((c) => td(c, '', c === 1)).join('')}</tr>`);
+  const fixed = rows.map((_, ri) => `<tr data-rowindex="${ri + 1}"><td data-colindex="0"></td></tr>`).join('');
+  return `<table class="fixed">${fixed}</table><table class="main">${rows.join('')}</table>`;
+}
+function sbPager(page) {
+  return `<ul class="sbgrid_PUI_PN sbgrid_PUI_PN_st">${[1, 2].map((n) => `<li class="sbgrid_PUI_NLI"><a${n === page ? ' class="active"' : ''} data-page="${n}">${n}</a></li>`).join('')}</ul>`;
+}
+const SB_HEAD = '<table class="head"><tr data-rowindex="0" class="sbgrid_common"><td data-colindex="0" colspan="2"><span>신청번호</span></td><td data-colindex="1" style="display:none"><span>신청번호</span></td><td data-colindex="2"><span>기관명</span></td><td data-colindex="3"><span>건물명</span></td><td data-colindex="4"><span>신청서구분</span></td><td data-colindex="5"><span>최초신청일자</span></td><td data-colindex="6"><span>진행상태</span></td></tr></table>';
+
+const HEAD = '<tr><th>신청번호</th><th>기관명</th><th>건물명</th><th>신청서구분</th><th>최초신청일자</th><th>진행상태</th></tr>';
+function listHtml(page, v) {
+  if (v === 'D' || v === 'E') {
+    const nc = v === 'E';
+    const data = JSON.stringify([1, 2].map((n) => ({ body: sbRows(n, nc), pager: sbPager(n) })));
+    const map = JSON.stringify(Object.fromEntries(P.map((p) => [iidOf(p), idOf(p)])));
+    return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>목록</title></head><body>
+    <div id="SBGridArea"><div id="sbBody">${sbRows(2, nc)}</div>${SB_HEAD}<div id="sbPage">${sbPager(2)}</div></div>
+    <script>var D=${data}, M=${map};
+      function fn_view(iid){ window.open('/C0/C0_02/C0_02_01_010_cstpop.do?sb=1&id='+M[iid],'cstpop','width=1200,height=900'); }
+      document.getElementById('SBGridArea').addEventListener('click', function(e){
+        var a = e.target.closest('a[data-page]');
+        if (a) { var n=+a.dataset.page; setTimeout(function(){ document.getElementById('sbBody').innerHTML=D[n-1].body; document.getElementById('sbPage').innerHTML=D[n-1].pager; }, 300); return; }
+        var td = e.target.closest('table.main td');
+        if (td && td.cellIndex === 3 && td.textContent.trim()) fn_view(td.parentElement.cells[1].textContent.trim());
+      });
+    </script></body></html>`;
+  }
+  const popupPath = v === 'B' ? '/C0/C0_02/C0_02_01_010_cstpop.do?frame=1&id=' : '/C0/C0_02/C0_02_01_010_cstpop.do?id=';
+  if (v === 'B') {
+    const data = JSON.stringify([1, 2].map((n) => ({ rows: rowsHtml(n, v), pager: pagerHtml(n, v) })));
+    return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>목록</title>
+    <script>var D=${data};function fn_view(id){ window.open('${popupPath}'+id,'cstpop','width=1200,height=900'); }
+    function go(n){ setTimeout(function(){ document.getElementById('body').innerHTML=D[n-1].rows; document.getElementById('pg').innerHTML=D[n-1].pager; }, 400); }</script></head>
+    <body><div class="grid-head"><table border="1"><thead>${HEAD}</thead></table></div>
+    <div class="grid-body" style="height:300px;overflow:auto"><table border="1"><thead style="display:none">${HEAD}</thead><tbody id="body">${rowsHtml(2, v)}</tbody></table></div>
+    <div class="paging" id="pg">${pagerHtml(2, v)}</div></body></html>`;
+  }
   return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>목록</title>
-  <script>function fn_view(id){ window.open('/C0/C0_02/C0_02_01_010_cstpop.do?id='+id,'cstpop','width=1200,height=900'); }</script></head>
-  <body><table border="1"><thead><tr><th>신청번호</th><th>기관명</th><th>건물명</th><th>신청서구분</th><th>최초신청일자</th><th>진행상태</th></tr></thead>
-  <tbody>${rows}</tbody></table><div class="paging">${pager}</div></body></html>`;
+  <script>function fn_view(id){ window.open('${popupPath}'+id,'cstpop','width=1200,height=900'); }</script></head>
+  <body><table border="1"><thead>${HEAD}</thead>
+  <tbody>${rowsHtml(page, v)}</tbody></table><div class="paging">${pagerHtml(page, v)}</div></body></html>`;
 }
 
-function popupHtml(id) {
+// SBGrid 흉내 에너지원 표: 본문 표가 먼저, 머리글 표가 뒤. 숨은 열 포함, 빈 채움 줄, 늦게 그려짐
+function sbEnergy(p) {
+  const td = (ci, v, hide) => `<td data-colindex="${ci}"${hide ? ' style="display:none"' : ''}><span>${v}</span></td>`;
+  const rows = p.energy.map((e, i) => `<tr data-rowindex="${i + 1}">${td(0, i + 1)}${td(1, 'X' + i, true)}${td(2, `<a href="#">${e[0]}</a>`)}${td(3, e[1])}${td(4, e[2])}${td(5, '864')}${td(6, '1.26')}${td(7, '365,848.36')}</tr>`);
+  while (rows.length < 4) rows.push(`<tr data-rowindex="${rows.length + 1}">${[0, 1, 2, 3, 4, 5, 6, 7].map((c) => td(c, '', c === 1)).join('')}</tr>`);
+  const head = `<tr data-rowindex="0">${td(0, '순번')}${td(1, '숨김', true)}${td(2, '에너지원')}${td(3, '에너지원형태')}${td(4, '설치의무용량')}${td(5, '단위에너지생산량')}${td(6, '보정계수')}${td(7, '신재생에너지 생산량(kwh/yr)')}</tr>`;
+  return `<div class="sbgrid_area"><div class="sb_body"><table>${rows.join('')}</table></div><div class="sb_head"><table>${head}</table></div></div>`;
+}
+// 그 아래 두 번째 그리드(건축용도) — 이 숫자가 에너지원으로 섞이면 안 됨
+function sbUse() {
+  const td = (ci, v) => `<td data-colindex="${ci}"><span>${v}</span></td>`;
+  return `<div class="sbgrid_area"><div class="sb_body"><table><tr data-rowindex="1">${td(0, 1)}${td(1, '문화시설')}${td(2, '2748.42')}${td(3, '999')}</tr></table></div>` +
+    `<div class="sb_head"><table><tr data-rowindex="0">${td(0, '순번')}${td(1, '건축용도')}${td(2, '건축 연면적')}${td(3, '단위에너지사용량')}</tr></table></div></div>`;
+}
+
+function popupHtml(id, sb) {
   const p = byId[id];
   const en = p.energy.map((e, i) => `<tr><td>${i + 1}</td><td><a href="#">${e[0]}</a></td><td>${e[1]}</td><td>${e[2]}</td><td>864</td><td>1.26</td><td>1</td><td><button>수정</button></td></tr>`).join('');
   // 실제 화면처럼 값은 페이지가 뜬 뒤 스크립트로 채운다
@@ -67,8 +140,8 @@ function popupHtml(id) {
    <tr><th>*허가연면적</th><td>*지 상 중 : <input value="2748.42">㎡</td></tr>
    <tr><th>*진행 일정</th><td>*허가 예정일 : <input value="20260131"><img alt="달력">
        *착공예정일 : <input id="st"><img alt="달력"> *준공예정일 : <input id="ed"><img alt="달력"></td></tr>
-   <tr><th>설치될 신·재생 에너지 설비의 개요</th><td>
-     <table border="1"><tr><th>순번</th><th>에너지원</th><th>에너지원형태</th><th>설치의무용량</th><th>단위에너지생산량</th><th>보정계수</th><th>신재생에너지 생산량(kwh/yr)</th><th>수정</th></tr>${en}</table>
+   <tr><th>설치될 신·재생 에너지 설비의 개요</th><td>${sb ? '<div id="enGrid"></div><div id="useGrid"></div>' : `
+     <table border="1"><tr><th>순번</th><th>에너지원</th><th>에너지원형태</th><th>설치의무용량</th><th>단위에너지생산량</th><th>보정계수</th><th>신재생에너지 생산량(kwh/yr)</th><th>수정</th></tr>${en}</table>`}
    </td></tr>
   </table>
   <script>
@@ -81,11 +154,13 @@ function popupHtml(id) {
      document.getElementById('st').value=${JSON.stringify(p.start)};
      document.getElementById('ed').value=${JSON.stringify(p.end)};
    }, 300);
+   ${sb ? `setTimeout(function(){ document.getElementById('enGrid').innerHTML=${JSON.stringify(sbEnergy(p))}; document.getElementById('useGrid').innerHTML=${JSON.stringify(sbUse())}; }, 1500);` : ''}
   </script></body></html>`;
 }
 
 // ---------- 가짜 구글 시트 (Apps Script 동작 흉내) ----------
-const sheet = [{ A: '수요기관', B: '공고명' }, { A: '서울특별시', B: '홍릉 연구개발(R&D) 지원센터 신축공사' }]; // 2행에 이미 있는 건 하나
+const SHEET0 = [{ A: '수요기관', B: '공고명' }, { A: '서울특별시', B: '홍릉 연구개발(R&D) 지원센터 신축공사' }]; // 2행에 이미 있는 건 하나
+let sheet = SHEET0.map((r) => ({ ...r }));
 const tokens = new Set();
 let popupsOpened = 0;
 const server = http.createServer((req, res) => {
@@ -105,22 +180,29 @@ const server = http.createServer((req, res) => {
     return;
   }
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  if (u.pathname.endsWith('cstpop.do')) { popupsOpened++; return res.end(popupHtml(u.searchParams.get('id'))); }
-  if (u.pathname.endsWith('list.do')) return res.end(listHtml(Number(u.searchParams.get('page') || 1)));
+  if (u.pathname.endsWith('cstpop.do') && u.searchParams.get('frame')) {
+    popupsOpened++;
+    return res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>설치계획서</title></head><body style="margin:0"><iframe src="/C0/C0_02/cstpop_body.do?id=${u.searchParams.get('id')}" style="width:100%;height:900px;border:0"></iframe></body></html>`);
+  }
+  if (u.pathname.endsWith('cstpop.do')) { popupsOpened++; return res.end(popupHtml(u.searchParams.get('id'), u.searchParams.get('sb'))); }
+  if (u.pathname.endsWith('cstpop_body.do')) return res.end(popupHtml(u.searchParams.get('id')));
+  if (u.pathname.endsWith('list.do')) return res.end(listHtml(Number(u.searchParams.get('page') || 1), u.searchParams.get('v') || 'A'));
   res.end('');
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
-fs.rmSync(path.join(outDir, 'profile-crawl'), { recursive: true, force: true });
-const ctx = await chromium.launchPersistentContext(path.join(outDir, 'profile-crawl'), {
+async function runVariant(v) {
+console.log(`\n===== 변형 ${v} =====`);
+sheet = SHEET0.map((r) => ({ ...r })); popupsOpened = 0; tokens.clear();
+const prof = path.join(outDir, 'profile-crawl-' + v);
+fs.rmSync(prof, { recursive: true, force: true });
+const ctx = await chromium.launchPersistentContext(prof, {
   headless: true, channel: 'chromium',
   args: [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`],
 });
 const sw = ctx.serviceWorkers()[0] || (await ctx.waitForEvent('serviceworker'));
 const extId = sw.url().split('/')[2];
-let failed = 0;
-const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name} ${extra}`); if (!ok) failed++; };
 const storage = (k) => sw.evaluate((k) => new Promise((r) => chrome.storage.local.get(k, (v) => r(v[k]))), k);
 
 // 1) 설정: 시트 연결
@@ -141,20 +223,45 @@ check('settings: 토큰이 시트로 전달됨', tokens.has(token));
 // 2) 목록 페이지에서 크롤링 시작
 const page = await ctx.newPage();
 page.on('dialog', (d) => d.accept());
-await page.goto(`${base}/C0/list.do?page=1`);
+await page.goto(`${base}/C0/list.do?v=${v}&page=1`);
 await page.waitForSelector('#nrcrawl-panel');
 check('list: 크롤링 패널 표시', true);
 await page.click('#nrcrawl-panel [data-act="start"]');
 const t0 = Date.now();
-while (Date.now() - t0 < 90000) {
+let manualClicks = 0;
+while (Date.now() - t0 < 150000) {
   const st = await storage('crawlState');
   if (st && !st.running && st.endedAt) break;
+  if (v === 'C') {
+    const lp = ctx.pages().find((p) => p.url().includes('list.do'));
+    const target = lp && await lp.$('.nrcrawl-target');
+    if (target) {
+      await target.click().catch(() => {}); manualClicks++;
+      // 사람처럼: 팝업이 처리되어 표시가 다음 건물로 옮겨질 때까지 기다린 뒤 다시 누름
+      const before = await target.evaluate((e) => e.textContent).catch(() => '');
+      const w0 = Date.now();
+      while (Date.now() - w0 < 15000) {
+        await new Promise((r) => setTimeout(r, 500));
+        const now = await lp.$eval('.nrcrawl-target', (e) => e.textContent).catch(() => null);
+        if (now !== before) break;
+      }
+      continue;
+    }
+  }
   await new Promise((r) => setTimeout(r, 500));
 }
 const st = await storage('crawlState');
 check('crawl: 정상 종료', st && !st.running && /모든 페이지/.test(st.lastMessage || ''), st && st.lastMessage);
 const listPage = ctx.pages().find((p) => p.url().includes('list.do'));
-check('crawl: 2페이지까지 이동', listPage && listPage.url().includes('page=2'), listPage && listPage.url());
+const pagerNow = listPage && await listPage.evaluate(() => (document.querySelector('.paging .on, .sbgrid_PUI_PN a.active') || {}).textContent);
+check('crawl: 2페이지까지 이동', pagerNow === '2', `현재 페이지=${pagerNow}`);
+if (v === 'C') {
+  const st2 = await storage('crawlState');
+  check('assist: 직접 클릭 모드로 전환되어 사람이 누른 클릭으로 진행', st2.assist === true && manualClicks >= 5, `clicks=${manualClicks}`);
+}
+if (v === 'B') {
+  const shot = path.join(outDir, 'crawl-list-B.png'); await listPage.screenshot({ path: shot });
+}
 
 const written = sheet.slice(2);
 check('sheet: 새로 기록된 행 수 = 2 (준공 경과 2건 제외, 이미 있는 1건 제외)', written.length === 2, JSON.stringify(written.map((r) => r.B)));
@@ -174,11 +281,12 @@ const statuses = Object.values(log).map((v) => v.status).sort().join(',');
 check('log: 5건 기록 (written 2, exists 1, past 2)', statuses === 'exists,past,past,written,written', statuses);
 check('log: 준공 경과 건 상태 past', log['2512260024'] && log['2512260024'].status === 'past');
 const openedFirst = popupsOpened;
+for (let i = 0; i < 10 && ctx.pages().some((p) => p.url().includes('cstpop')); i++) await new Promise((r) => setTimeout(r, 500));
 check('popup: 5건 모두 열고 닫힘', openedFirst === 5 && ctx.pages().filter((p) => p.url().includes('cstpop')).length === 0, `opened=${openedFirst}`);
-await listPage.screenshot({ path: path.join(outDir, 'crawl-list.png') });
+await listPage.screenshot({ path: path.join(outDir, `crawl-list-${v}.png`) });
 
 // 3) 다시 실행 → 기록된 건은 열지 않음
-await listPage.goto(`${base}/C0/list.do?page=1`);
+await listPage.goto(`${base}/C0/list.do?v=${v}&page=1`);
 await listPage.waitForSelector('#nrcrawl-panel');
 await listPage.click('#nrcrawl-panel [data-act="start"]');
 const t1 = Date.now();
@@ -194,8 +302,15 @@ check('rerun: 시트에 중복 기록 없음', sheet.length === 4, String(sheet.
 await opt.reload();
 await opt.waitForFunction(() => /기록 5건/.test(document.querySelector('#cr-info').textContent));
 check('settings: 작업 기록 표시', true, await opt.textContent('#cr-info'));
-await opt.screenshot({ path: path.join(outDir, 'crawl-options.png'), fullPage: true });
+await opt.screenshot({ path: path.join(outDir, `crawl-options-${v}.png`), fullPage: true });
 
-await ctx.close(); server.close();
+await ctx.close();
+}
+
+let failed = 0;
+const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name} ${extra}`); if (!ok) failed++; };
+const only = process.argv[2];
+for (const v of ['A', 'B', 'C', 'D', 'E']) if (!only || only === v) await runVariant(v);
+server.close();
 console.log(failed ? `\n${failed} FAILED` : '\nALL PASSED');
 process.exit(failed ? 1 : 0);
