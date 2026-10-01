@@ -173,7 +173,7 @@
   init();
 
   // ---------- 4. 크롤링 → 구글 시트 ----------
-  const STATUS_KO = { written: '시트 작성', exists: '시트에 이미 있음', past: '준공 경과 제외', collected: '수집(시트 미연결)' };
+  const STATUS_KO = { written: '시트 작성', exists: '시트에 이미 있음', past: '준공 경과 제외', nodate: '일정 없음 제외(다음에 다시 확인)', collected: '수집(시트 미연결)' };
   const COLS = 'ABCDEFGHIJKLMNOPQR'.split('');
   function randomToken() {
     const a = new Uint8Array(12); crypto.getRandomValues(a);

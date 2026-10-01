@@ -15,7 +15,7 @@
   if (window.__nrCrawlLoaded) return;
   window.__nrCrawlLoaded = true;
 
-  const VERSION = '1.3.1';
+  const VERSION = '1.4.0';
   const isTop = window.top === window;
   const STATE = 'crawlState';     // { running, awaiting, assist, page, stats, startedAt }
   const LOG = 'crawlLog';         // { [key]: { status, org, name, at } }
@@ -226,12 +226,16 @@
     if (findHeader()) return false; // 목록 페이지 자신은 팝업이 아님
     const key = st.awaiting;
     // 화면이 다 그려질 때까지 최대 15초 기다림 (값이 늦게 채워지는 화면 대비)
+    // 건물명이 보이면, 날짜가 비어 있는 건일 수 있으므로 날짜는 최대 3초만 더 기다린다
     const t0 = Date.now();
     let data = null;
+    let nameAt = 0;
     while (Date.now() - t0 < 15000) {
       if (findLabels('준공예정일').length) {
         data = extract();
-        if (data.name && data.end) break;
+        if (data.name && data.start && data.end) break;
+        if (data.name && !nameAt) nameAt = Date.now();
+        if (nameAt && Date.now() - nameAt > 3000) break;
       }
       await sleep(400);
     }
@@ -561,7 +565,8 @@
           let st = await getState();
           if (!st.running) { ui(); return; }
           const log = await get(LOG, {});
-          if (log[it.key]) continue; // 이미 처리한 건
+          // 이미 처리한 건은 건너뜀. 단, 일정이 비어 제외했던 건은 그 사이 입력됐을 수 있어 다시 확인
+          if (log[it.key] && log[it.key].status !== 'nodate') continue;
 
           const res = await openOne(it);
           st = await getState();
@@ -582,7 +587,11 @@
           const end = ymd(d.end);
           const entry = { org: d.org || it.org, name: d.name || it.name, end: fmtDate(d.end), at: new Date().toISOString() };
 
-          if (end && end < todayStart()) {
+          if (!ymd(d.start) || !end) {
+            // 착공예정일 또는 준공예정일이 비어 있으면 시트에 쓰지 않음
+            log[it.key] = { ...entry, status: 'nodate', start: fmtDate(d.start) };
+            stats.nodate = (stats.nodate || 0) + 1;
+          } else if (end < todayStart()) {
             log[it.key] = { ...entry, status: 'past' };
             stats.past = (stats.past || 0) + 1;
           } else {
@@ -737,7 +746,7 @@
     panel.querySelector('[data-act="stop"]').disabled = !st.running;
     panel.querySelector('#nrcrawl-stats').innerHTML =
       `<span>시트 작성 <b>${s.written || 0}</b></span><span>수집 <b>${s.collected || 0}</b></span>` +
-      `<span>준공 경과 제외 <b>${s.past || 0}</b></span><span>시트에 이미 있음 <b>${s.exists || 0}</b></span><span>오류 <b>${s.error || 0}</b></span>` +
+      `<span>준공 경과 제외 <b>${s.past || 0}</b></span><span>시트에 이미 있음 <b>${s.exists || 0}</b></span><span>일정 없음 제외 <b>${s.nodate || 0}</b></span><span>오류 <b>${s.error || 0}</b></span>` +
       (st.running && st.assist ? '<span class="assist">직접 클릭 모드</span>' : '');
     const m = panel.querySelector('#nrcrawl-msg');
     m.textContent = msg || st.lastMessage || (st.running ? '진행 중…' : '대기 중');
