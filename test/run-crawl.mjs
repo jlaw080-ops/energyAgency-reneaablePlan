@@ -54,8 +54,38 @@ function pagerHtml(page, v) {
     ? `<a href="#" class="${n === page ? 'on' : ''}" onclick="go(${n});return false;">${n}</a>`
     : (n === page ? `<strong class="on">${n}</strong>` : `<a href="?v=${v}&page=${n}">${n}</a>`)).join(' ');
 }
+// D: 실제 사이트(SBGrid) 구조 흉내 — 본문 표가 먼저, 머리글 표가 뒤에. 신청번호 칸이 2개(두 번째는 숨은 내부 번호),
+//    모든 칸에 data-colindex, 빈 채움 줄, 링크 없이 그리드 영역 클릭 감지, ul>li>a.active 페이지 번호, 2페이지에서 시작
+const iidOf = (p) => '20191119' + String(P.indexOf(p) + 10).padStart(4, '0');
+function sbRows(page) {
+  const td = (ci, v, hide) => `<td class="sbgrid_cell" data-colindex="${ci}"${hide ? ' style="display:none"' : ''}><span class="sbgrid_common">${v}</span></td>`;
+  const rows = pages[page - 1].map((p, ri) => `<tr data-rowindex="${ri + 1}" class="sbgrid_common">${td(0, p.no)}${td(1, iidOf(p), true)}${td(2, p.org)}${td(3, p.name)}${td(4, p.kind || '설치계획')}${td(5, '2019-11-19')}${td(6, '작성중')}</tr>`);
+  while (rows.length < 6) rows.push(`<tr data-rowindex="${rows.length + 1}">${[0, 1, 2, 3, 4, 5, 6].map((c) => td(c, '', c === 1)).join('')}</tr>`);
+  const fixed = rows.map((_, ri) => `<tr data-rowindex="${ri + 1}"><td data-colindex="0"></td></tr>`).join('');
+  return `<table class="fixed">${fixed}</table><table class="main">${rows.join('')}</table>`;
+}
+function sbPager(page) {
+  return `<ul class="sbgrid_PUI_PN sbgrid_PUI_PN_st">${[1, 2].map((n) => `<li class="sbgrid_PUI_NLI"><a${n === page ? ' class="active"' : ''} data-page="${n}">${n}</a></li>`).join('')}</ul>`;
+}
+const SB_HEAD = '<table class="head"><tr data-rowindex="0" class="sbgrid_common"><td data-colindex="0" colspan="2"><span>신청번호</span></td><td data-colindex="1" style="display:none"><span>신청번호</span></td><td data-colindex="2"><span>기관명</span></td><td data-colindex="3"><span>건물명</span></td><td data-colindex="4"><span>신청서구분</span></td><td data-colindex="5"><span>최초신청일자</span></td><td data-colindex="6"><span>진행상태</span></td></tr></table>';
+
 const HEAD = '<tr><th>신청번호</th><th>기관명</th><th>건물명</th><th>신청서구분</th><th>최초신청일자</th><th>진행상태</th></tr>';
 function listHtml(page, v) {
+  if (v === 'D') {
+    const data = JSON.stringify([1, 2].map((n) => ({ body: sbRows(n), pager: sbPager(n) })));
+    const map = JSON.stringify(Object.fromEntries(P.map((p) => [iidOf(p), idOf(p)])));
+    return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>목록</title></head><body>
+    <div id="SBGridArea"><div id="sbBody">${sbRows(2)}</div>${SB_HEAD}<div id="sbPage">${sbPager(2)}</div></div>
+    <script>var D=${data}, M=${map};
+      function fn_view(iid){ window.open('/C0/C0_02/C0_02_01_010_cstpop.do?id='+M[iid],'cstpop','width=1200,height=900'); }
+      document.getElementById('SBGridArea').addEventListener('click', function(e){
+        var a = e.target.closest('a[data-page]');
+        if (a) { var n=+a.dataset.page; setTimeout(function(){ document.getElementById('sbBody').innerHTML=D[n-1].body; document.getElementById('sbPage').innerHTML=D[n-1].pager; }, 300); return; }
+        var td = e.target.closest('table.main td[data-colindex="3"]');
+        if (td && td.textContent.trim()) fn_view(td.parentElement.querySelector('td[data-colindex="1"]').textContent.trim());
+      });
+    </script></body></html>`;
+  }
   const popupPath = v === 'B' ? '/C0/C0_02/C0_02_01_010_cstpop.do?frame=1&id=' : '/C0/C0_02/C0_02_01_010_cstpop.do?id=';
   if (v === 'B') {
     const data = JSON.stringify([1, 2].map((n) => ({ rows: rowsHtml(n, v), pager: pagerHtml(n, v) })));
@@ -195,7 +225,7 @@ while (Date.now() - t0 < 150000) {
 const st = await storage('crawlState');
 check('crawl: 정상 종료', st && !st.running && /모든 페이지/.test(st.lastMessage || ''), st && st.lastMessage);
 const listPage = ctx.pages().find((p) => p.url().includes('list.do'));
-const pagerNow = listPage && await listPage.evaluate(() => (document.querySelector('.paging .on') || {}).textContent);
+const pagerNow = listPage && await listPage.evaluate(() => (document.querySelector('.paging .on, .sbgrid_PUI_PN a.active') || {}).textContent);
 check('crawl: 2페이지까지 이동', pagerNow === '2', `현재 페이지=${pagerNow}`);
 if (v === 'C') {
   const st2 = await storage('crawlState');
@@ -251,7 +281,7 @@ await ctx.close();
 let failed = 0;
 const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name} ${extra}`); if (!ok) failed++; };
 const only = process.argv[2];
-for (const v of ['A', 'B', 'C']) if (!only || only === v) await runVariant(v);
+for (const v of ['A', 'B', 'C', 'D']) if (!only || only === v) await runVariant(v);
 server.close();
 console.log(failed ? `\n${failed} FAILED` : '\nALL PASSED');
 process.exit(failed ? 1 : 0);

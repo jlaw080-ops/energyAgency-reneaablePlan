@@ -15,7 +15,7 @@
   if (window.__nrCrawlLoaded) return;
   window.__nrCrawlLoaded = true;
 
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const isTop = window.top === window;
   const STATE = 'crawlState';     // { running, awaiting, assist, page, stats, startedAt }
   const LOG = 'crawlLog';         // { [key]: { status, org, name, at } }
@@ -213,16 +213,31 @@
       const name = tx.indexOf('건물명');
       const no = tx.indexOf('신청번호');
       if (name < 0 || no < 0) continue;
-      return {
-        tr, table: tr.closest('table'), cols: vc.length,
-        I: { no, name, org: tx.indexOf('기관명'), kind: tx.indexOf('신청서구분'), first: tx.indexOf('최초신청일자') },
-      };
+      // SBGrid 등 그리드 부품: 칸마다 data-colindex(열 번호)가 붙어 있으면 그것을 기준으로 한다
+      let colMap = null;
+      if (tr.querySelector('[data-colindex]')) {
+        colMap = {};
+        for (const c of tr.cells) {
+          const ci = c.getAttribute('data-colindex');
+          const t = norm(c.textContent);
+          if (ci == null || !t) continue;
+          if (!(t in colMap)) colMap[t] = Number(ci);
+          else if (!((t + '#2') in colMap)) colMap[t + '#2'] = Number(ci); // 숨은 두 번째 칸 (내부 번호)
+        }
+      }
+      const I = colMap
+        ? { no: colMap['신청번호'], noHidden: colMap['신청번호#2'], name: colMap['건물명'], org: colMap['기관명'], kind: colMap['신청서구분'], first: colMap['최초신청일자'] }
+        : { no, name, org: tx.indexOf('기관명'), kind: tx.indexOf('신청서구분'), first: tx.indexOf('최초신청일자') };
+      return { tr, table: tr.closest('table'), cols: vc.length, I, grid: !!colMap };
     }
     return null;
   }
 
-  // 머리글과 같은 표 아래 줄들, 없으면 그 뒤에 오는 별도 표(머리글/본문이 나뉜 화면)의 줄들
+  const cleanText = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
+
+  // 일반 표: 머리글과 같은 표의 아래 줄, 없으면 다른 표(앞뒤 어디든)의 줄
   function bodyRows(h) {
+    if (h.grid) return gridRows(h);
     const need = h.I.name + 1;
     const ok = (r) => {
       if (r === h.tr || r.closest(OWN)) return false;
@@ -232,35 +247,73 @@
       if (norm(vc[h.I.name].textContent) === '건물명') return false; // 숨은 머리글 줄
       return r.offsetParent !== null || r.getClientRects().length > 0; // 보이는 줄만
     };
+    const wrap = (rs) => rs.map((r) => ({ tr: r, cell: (i) => (i == null || i < 0 ? null : visualCells(r)[i]) }));
     const same = [...h.table.rows].filter((r) => (h.tr.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING) && ok(r));
-    if (same.length) return { rows: same, table: h.table };
+    if (same.length) return { rows: wrap(same), tables: [h.table] };
     for (const t of document.querySelectorAll('table')) {
       if (t === h.table || t.contains(h.table) || h.table.contains(t) || t.closest(OWN)) continue;
-      if (!(h.table.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
       const rs = [...t.rows].filter(ok);
-      if (rs.length && Math.abs(visualCells(rs[0]).length - h.cols) <= 2) return { rows: rs, table: t };
+      if (rs.length && Math.abs(visualCells(rs[0]).length - h.cols) <= 2) return { rows: wrap(rs), tables: [t] };
     }
-    return { rows: [], table: null };
+    return { rows: [], tables: [] };
+  }
+
+  // 그리드 부품(SBGrid 등): 고정 열/본문 표가 나뉘어 있을 수 있어 줄 번호(data-rowindex)로 칸을 모은다
+  function gridRows(h) {
+    // 머리글 표와 본문 표를 함께 감싸는 영역 찾기
+    let scope = h.table.parentElement;
+    for (let i = 0; i < 10 && scope && scope !== document.body; i++) {
+      const others = [...scope.querySelectorAll('tr')].filter((r) => !h.table.contains(r) && r.querySelector('td[data-colindex]'));
+      if (others.length) break;
+      scope = scope.parentElement;
+    }
+    scope = scope || document;
+    const byRow = new Map();
+    const tables = new Set();
+    let n = 0;
+    for (const tr of scope.querySelectorAll('tr')) {
+      if (h.table.contains(tr) || tr.closest(OWN)) continue;
+      const tds = tr.querySelectorAll('td[data-colindex]');
+      if (!tds.length) continue;
+      const ri = tr.getAttribute('data-rowindex') ?? `n${n++}`;
+      if (!byRow.has(ri)) byRow.set(ri, { cells: {}, tr: null });
+      const rec = byRow.get(ri);
+      for (const td of tds) {
+        const ci = Number(td.getAttribute('data-colindex'));
+        if (!rec.cells[ci] || (!cleanText(rec.cells[ci]) && cleanText(td))) rec.cells[ci] = td;
+        if (ci === h.I.name && cleanText(td)) rec.tr = tr;
+      }
+      tables.add(tr.closest('table'));
+    }
+    const rows = [];
+    for (const [, rec] of byRow) {
+      const nameCell = rec.cells[h.I.name];
+      if (!nameCell || !cleanText(nameCell) || norm(nameCell.textContent) === '건물명') continue;
+      rows.push({ tr: rec.tr || nameCell.closest('tr'), cell: (i) => (i == null || i < 0 ? null : rec.cells[i]) });
+    }
+    return { rows, tables: [...tables] };
   }
 
   function findList() {
     const h = findHeader();
     if (!h) return null;
-    const { rows, table: bodyTable } = bodyRows(h);
+    const body = bodyRows(h);
     const I = h.I;
     const items = [];
-    for (const r of rows) {
-      const vc = visualCells(r);
-      const txt = (i) => (i >= 0 && vc[i] ? vc[i].textContent.replace(/\s+/g, ' ').trim() : '');
-      const cell = vc[I.name];
-      const link = cell.querySelector('a, [onclick], button') || cell;
+    for (const r of body.rows) {
+      const txt = (i) => cleanText(r.cell(i));
+      const cell = r.cell(I.name);
+      if (!cell || !txt(I.name)) continue;
+      const link = cell.querySelector('a, [onclick], button') || cell.querySelector('span') || cell;
       const no = txt(I.no);
+      const hidden = I.noHidden != null ? txt(I.noHidden) : '';
       const name = (link.getAttribute && link.getAttribute('title')) || txt(I.name);
-      if (!txt(I.name)) continue;
-      const key = /^\d{6,}$/.test(no) ? no : `${txt(I.org)}|${txt(I.name)}|${txt(I.kind)}|${txt(I.first)}`;
-      items.push({ key, no, org: txt(I.org), name: name.trim(), kind: txt(I.kind), link, row: r });
+      const key = /^\d{6,}$/.test(no) ? no
+        : /^\d{6,}$/.test(hidden) ? `ID${hidden}` // 작성중(신청번호 없음) 건은 그리드 내부 번호 사용
+          : `${txt(I.org)}|${txt(I.name)}|${txt(I.kind)}|${txt(I.first)}`;
+      items.push({ key, no, org: txt(I.org), name: name.trim(), kind: txt(I.kind), link, row: r.tr || cell.closest('tr') });
     }
-    return { header: h, tables: [h.table, bodyTable].filter(Boolean), items };
+    return { header: h, tables: [h.table, ...body.tables].filter(Boolean), items };
   }
 
   // 페이지 번호 묶음(1 2 3 …)을 찾는다
@@ -523,8 +576,8 @@
     line('머리글', h ? { cols: h.cols, I: h.I, headerHtml: clip(h.tr.outerHTML, 1200) } : '찾지 못함');
     if (h) {
       const b = bodyRows(h);
-      line('본문 줄 수', `${b.rows.length} (별도 표: ${b.table && b.table !== h.table ? '예' : '아니오'})`);
-      b.rows.slice(0, 2).forEach((r, i) => line(`본문 ${i + 1}번째 줄 HTML`, clip(r.outerHTML, 1500)));
+      line('본문 줄 수', `${b.rows.length} (그리드: ${h.grid ? '예' : '아니오'}, 본문 표 ${b.tables.length}개)`);
+      b.rows.slice(0, 2).forEach((r, i) => line(`본문 ${i + 1}번째 줄 HTML`, clip(r.tr && r.tr.outerHTML, 1500)));
       const l = findList();
       line('읽은 항목(앞 3건)', l.items.slice(0, 3).map((x) => ({ key: x.key, name: x.name, link: clip(x.link.outerHTML, 300) })));
       const p = findPager(l.tables);
