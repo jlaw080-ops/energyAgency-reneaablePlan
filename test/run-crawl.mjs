@@ -31,6 +31,13 @@ const P = [
   { no: '2310180004', org: '서울특별시', dept: '농수산과', name: '양곡도매시장', zip: '06789', addr: '서울특별시 양천구 1', start: '20230101', end: '20200101', // 경과
     energy: [] },
 ];
+// 착공예정일 또는 준공예정일이 비어 있는 건 → 제외, 다음 실행 때 다시 확인
+P.push(
+  { no: '2401010001', org: '서울특별시', dept: '체육정책과', name: '잠실 체육시설 리모델링', zip: '05500', addr: '서울특별시 송파구 1', start: '', end: '20290101',
+    energy: [['태양광', '건물부착형', '12.000']] },
+  { no: '2401010002', org: '서울특별시', dept: '문화정책과', name: '마포 문화센터 신축', zip: '04000', addr: '서울특별시 마포구 2', start: '20270101', end: '',
+    energy: [['지열', '수직밀폐형', '50.000']] },
+);
 const pages = [P.slice(0, 3), P.slice(3)];
 const byId = Object.fromEntries(P.map((p, i) => [p.no === '-' ? 'draft' + i : p.no, p]));
 const idOf = (p) => Object.keys(byId).find((k) => byId[k] === p);
@@ -227,11 +234,13 @@ await page.goto(`${base}/C0/list.do?v=${v}&page=1`);
 await page.waitForSelector('#nrcrawl-panel');
 check('list: 크롤링 패널 표시', true);
 await page.click('#nrcrawl-panel [data-act="start"]');
-const t0 = Date.now();
+// 크롤링이 끝날 때까지 기다림. 변형 C(직접 클릭 모드)는 노란 표시를 사람처럼 눌러 준다
+async function waitDone(after) {
 let manualClicks = 0;
+const t0 = Date.now();
 while (Date.now() - t0 < 150000) {
   const st = await storage('crawlState');
-  if (st && !st.running && st.endedAt) break;
+  if (st && !st.running && st.endedAt && (!after || st.startedAt > after)) break;
   if (v === 'C') {
     const lp = ctx.pages().find((p) => p.url().includes('list.do'));
     const target = lp && await lp.$('.nrcrawl-target');
@@ -250,6 +259,9 @@ while (Date.now() - t0 < 150000) {
   }
   await new Promise((r) => setTimeout(r, 500));
 }
+return manualClicks;
+}
+const manualClicks = await waitDone(null);
 const st = await storage('crawlState');
 check('crawl: 정상 종료', st && !st.running && /모든 페이지/.test(st.lastMessage || ''), st && st.lastMessage);
 const listPage = ctx.pages().find((p) => p.url().includes('list.do'));
@@ -257,7 +269,7 @@ const pagerNow = listPage && await listPage.evaluate(() => (document.querySelect
 check('crawl: 2페이지까지 이동', pagerNow === '2', `현재 페이지=${pagerNow}`);
 if (v === 'C') {
   const st2 = await storage('crawlState');
-  check('assist: 직접 클릭 모드로 전환되어 사람이 누른 클릭으로 진행', st2.assist === true && manualClicks >= 5, `clicks=${manualClicks}`);
+  check('assist: 직접 클릭 모드로 전환되어 사람이 누른 클릭으로 진행', st2.assist === true && manualClicks >= 7, `clicks=${manualClicks}`);
 }
 if (v === 'B') {
   const shot = path.join(outDir, 'crawl-list-B.png'); await listPage.screenshot({ path: shot });
@@ -278,29 +290,27 @@ check('sheet: 신청번호 없는(작성중) 건도 기록', !!draft && draft.R 
 
 const log = await storage('crawlLog');
 const statuses = Object.values(log).map((v) => v.status).sort().join(',');
-check('log: 5건 기록 (written 2, exists 1, past 2)', statuses === 'exists,past,past,written,written', statuses);
+check('log: 7건 기록 (written 2, exists 1, past 2, nodate 2)', statuses === 'exists,nodate,nodate,past,past,written,written', statuses);
+check('sheet: 착공·준공예정일 빈 건은 시트에 없음', !sheet.some((r) => r.B === '잠실 체육시설 리모델링' || r.B === '마포 문화센터 신축'));
 check('log: 준공 경과 건 상태 past', log['2512260024'] && log['2512260024'].status === 'past');
 const openedFirst = popupsOpened;
 for (let i = 0; i < 10 && ctx.pages().some((p) => p.url().includes('cstpop')); i++) await new Promise((r) => setTimeout(r, 500));
-check('popup: 5건 모두 열고 닫힘', openedFirst === 5 && ctx.pages().filter((p) => p.url().includes('cstpop')).length === 0, `opened=${openedFirst}`);
+check('popup: 7건 모두 열고 닫힘', openedFirst === 7 && ctx.pages().filter((p) => p.url().includes('cstpop')).length === 0, `opened=${openedFirst}`);
 await listPage.screenshot({ path: path.join(outDir, `crawl-list-${v}.png`) });
 
 // 3) 다시 실행 → 기록된 건은 열지 않음
 await listPage.goto(`${base}/C0/list.do?v=${v}&page=1`);
 await listPage.waitForSelector('#nrcrawl-panel');
 await listPage.click('#nrcrawl-panel [data-act="start"]');
-const t1 = Date.now();
-while (Date.now() - t1 < 60000) {
-  const s2 = await storage('crawlState');
-  if (s2 && !s2.running && s2.endedAt && s2.startedAt > st.startedAt) break;
-  await new Promise((r) => setTimeout(r, 500));
-}
-check('rerun: 팝업을 새로 열지 않음', popupsOpened === openedFirst, `opened=${popupsOpened}`);
+await waitDone(st.startedAt);
+check('rerun: 기록된 건은 열지 않고, 일정 없음 2건만 다시 확인', popupsOpened === openedFirst + 2, `opened=${popupsOpened}`);
+const log2 = await storage('crawlLog');
+check('rerun: 일정 없음 건은 여전히 제외', Object.values(log2).filter((x) => x.status === 'nodate').length === 2);
 check('rerun: 시트에 중복 기록 없음', sheet.length === 4, String(sheet.length));
 
 // 4) 설정 페이지 작업 기록 표시
 await opt.reload();
-await opt.waitForFunction(() => /기록 5건/.test(document.querySelector('#cr-info').textContent));
+await opt.waitForFunction(() => /기록 7건/.test(document.querySelector('#cr-info').textContent));
 check('settings: 작업 기록 표시', true, await opt.textContent('#cr-info'));
 await opt.screenshot({ path: path.join(outDir, `crawl-options-${v}.png`), fullPage: true });
 
